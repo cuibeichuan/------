@@ -245,23 +245,23 @@
       <div class="metric-value" id="mSport">—</div>
     </div>
     <div class="metric">
-      <div class="metric-label">计数</div>
+      <div class="metric-label" id="mCountLabel">计数</div>
       <div class="metric-value" id="mCount">0</div>
     </div>
     <div class="metric">
-      <div class="metric-label">状态</div>
+      <div class="metric-label" id="mFsmStateLabel">状态</div>
       <div class="metric-value" id="mFsmState">—</div>
     </div>
     <div class="metric">
-      <div class="metric-label">左膝角度</div>
+      <div class="metric-label" id="mKneeLLabel">左膝角度</div>
       <div class="metric-value" id="mKneeL">—</div>
     </div>
     <div class="metric">
-      <div class="metric-label">右膝角度</div>
+      <div class="metric-label" id="mKneeRLabel">右膝角度</div>
       <div class="metric-value" id="mKneeR">—</div>
     </div>
     <div class="metric">
-      <div class="metric-label">躯干倾角</div>
+      <div class="metric-label" id="mLeanLabel">躯干倾角</div>
       <div class="metric-value" id="mLean">—</div>
     </div>
   </div>
@@ -339,6 +339,14 @@ const CONFIG = {
     // ---- 活跃跳绳判定（用于过滤准备/结束阶段的零散动作）----
     MIN_WARMUP_JUMPS: 2,        // 至少累计这么多跳后，才认为"已进入跳绳"
     ACTIVE_INTERVAL_MS: 1500,   // 相邻两跳间隔 > 该值则视为"已退出跳绳/在休息"
+  },
+  // ============ 规则引擎 · 俯卧撑 · 躯干笔直度 ============
+  PUSHUP_BODYLINE: {
+    BODY_MIN: 165,             // 肩-髋-踝标准下限（侧面 ≈ 180°）
+    NECK_MIN: 160,             // 耳-肩-髋标准下限（颈部与躯干同轴）
+    LM_MIN_VISIBILITY: 0.4,
+    SAMPLE_INTERVAL_MS: 200,   // 报告采样间隔
+    BAD_FRAMES_FOR_VOICE: 8,   // 连续偏离这么多帧（≈ 8 × 33ms ≈ 0.27s）触发语音
   },
   // ============ 实时语音提醒 ============
   VOICE: {
@@ -518,6 +526,7 @@ function drawSkeleton(landmarks) {
 // MediaPipe Pose Landmark 索引（节选常用）
 const LM = {
   NOSE: 0,
+  LEFT_EAR: 7,       RIGHT_EAR: 8,
   LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
   LEFT_HIP: 23,      RIGHT_HIP: 24,
   LEFT_KNEE: 25,     RIGHT_KNEE: 26,
@@ -992,19 +1001,193 @@ class JumpRopePosture extends FSMRule {
   }
 }
 
+/**
+ * 俯卧撑·躯干笔直度规则
+ *
+ * 设计：
+ *  - 自动选择两侧中关键点可见度更高的一侧（侧面机位优先）
+ *  - 用 worldLandmarks（3D，米单位）计算两个夹角：
+ *      bodyAngle = ∠(肩, 髋, 踝)        理想 ≈ 180°，标准 ≥ BODY_MIN
+ *      neckAngle = ∠(耳, 肩, 髋)        理想 ≈ 180°，标准 ≥ NECK_MIN
+ *  - 通过髋点对"肩-踝"直线、耳点对"肩-髋"直线的法向偏移方向，
+ *    把不达标进一步细分为：塌腰 / 撅臀 / 头部下垂 / 头部后仰
+ *  - 实时语音：连续 BAD_FRAMES_FOR_VOICE 帧偏离即触发 'speak("保持身体笔直")'
+ *  - 报告采样：每 SAMPLE_INTERVAL_MS 记录一次帧分类，便于后续给出比例与建议
+ *
+ * 运动损伤风险关联（用于报告）：
+ *  - 塌腰 (hip sag)        ：腰椎过度前凸 + 椎间盘后部受压 → 下腰痛、腰椎间盘风险
+ *  - 撅臀 (hip pike)       ：负荷转移到肩前束/三角肌前部，胸大肌训练效果下降；
+ *                            长期与肩前撞击综合征 (subacromial impingement) 关联
+ *  - 头部下垂              ：颈椎屈曲下颌内收，颈胸交界处张力升高，颈源性头痛
+ *  - 头部后仰              ：颈椎过伸，小关节挤压，与颈椎小关节综合征相关
+ */
+class PushupBodyLine extends FSMRule {
+  constructor(cfg) {
+    super('pushup_bodyline', 'IDLE');
+    this.cfg = cfg;
+    this.metrics = this._emptyMetrics();
+    this.badFrames = 0;
+    this.lastSampleTs = 0;
+  }
+  _emptyMetrics() {
+    return {
+      bodyAngle: null,
+      neckAngle: null,
+      hipDeviation: null,    // null | 'sag' | 'pike'
+      headDeviation: null,   // null | 'down' | 'up'
+      framesSeen: 0,
+      counts: {
+        body: { standard: 0, sag: 0, pike: 0 },
+        neck: { standard: 0, down: 0, up: 0 },
+      },
+      samples: [],           // [{ts, bodyAngle, neckAngle, hipDev, headDev}]
+    };
+  }
+  reset() {
+    super.reset();
+    this.metrics = this._emptyMetrics();
+    this.badFrames = 0;
+    this.lastSampleTs = 0;
+  }
+
+  /** 选择关键点可见度更高的那一侧（左/右）；返回 landmark 索引集 */
+  _pickSide(landmarks) {
+    const minV = this.cfg.LM_MIN_VISIBILITY;
+    const candidates = [
+      { S: LM.LEFT_SHOULDER,  H: LM.LEFT_HIP,  A: LM.LEFT_ANKLE,  E: LM.LEFT_EAR  },
+      { S: LM.RIGHT_SHOULDER, H: LM.RIGHT_HIP, A: LM.RIGHT_ANKLE, E: LM.RIGHT_EAR },
+    ];
+    let best = null, bestVis = -1;
+    for (const c of candidates) {
+      const pts = [c.S, c.H, c.A, c.E].map(i => landmarks[i]);
+      if (pts.some(p => !p || (p.visibility ?? 0) < minV)) continue;
+      const vis = pts.reduce((s, p) => s + (p.visibility ?? 0), 0);
+      if (vis > bestVis) { bestVis = vis; best = c; }
+    }
+    return best;
+  }
+
+  /** 求 P 在直线 A→B 上的投影 y 与 P.y 的差（用于法向偏离判定） */
+  _normalOffsetY(A, B, P) {
+    const dx = B.x - A.x, dy = B.y - A.y, dz = (B.z ?? 0) - (A.z ?? 0);
+    const denom = dx * dx + dy * dy + dz * dz;
+    if (denom === 0) return 0;
+    const t = ((P.x - A.x) * dx + (P.y - A.y) * dy + ((P.z ?? 0) - (A.z ?? 0)) * dz) / denom;
+    const projY = A.y + t * dy;
+    return P.y - projY; // y 向下为正：>0 表示 P 比直线低（更靠地面）
+  }
+
+  update(landmarks, ts, worldLandmarks) {
+    if (!landmarks) {
+      this.metrics.bodyAngle = null;
+      this.metrics.neckAngle = null;
+      this.metrics.hipDeviation = null;
+      this.metrics.headDeviation = null;
+      this.badFrames = 0;
+      return;
+    }
+    const side = this._pickSide(landmarks);
+    if (!side) {
+      this.metrics.bodyAngle = null;
+      this.metrics.neckAngle = null;
+      this.metrics.hipDeviation = null;
+      this.metrics.headDeviation = null;
+      this.badFrames = 0;
+      return;
+    }
+    // 用 worldLandmarks 算角度更稳健（侧面机位时尤甚）
+    const W = worldLandmarks || landmarks;
+    const S = W[side.S], H = W[side.H], A = W[side.A], E = W[side.E];
+    if (!S || !H || !A || !E) return;
+
+    const bodyAngle = angleDeg(S, H, A);
+    const neckAngle = angleDeg(E, S, H);
+
+    // 偏移方向（用 worldLandmarks 同样坐标系，保持一致）
+    const hipOff = this._normalOffsetY(S, A, H);  // >0 sag（塌腰）；<0 pike（撅臀）
+    const earOff = this._normalOffsetY(S, H, E);  // >0 头下垂；<0 头后仰
+
+    let hipDev = null, headDev = null;
+    if (bodyAngle < this.cfg.BODY_MIN) hipDev = hipOff > 0 ? 'sag' : 'pike';
+    if (neckAngle < this.cfg.NECK_MIN) headDev = earOff > 0 ? 'down' : 'up';
+
+    this.metrics.bodyAngle = bodyAngle;
+    this.metrics.neckAngle = neckAngle;
+    this.metrics.hipDeviation = hipDev;
+    this.metrics.headDeviation = headDev;
+
+    // 周期性采样
+    if (ts - this.lastSampleTs >= this.cfg.SAMPLE_INTERVAL_MS) {
+      this.lastSampleTs = ts;
+      this.metrics.framesSeen++;
+      this.metrics.counts.body[hipDev || 'standard']++;
+      this.metrics.counts.neck[headDev || 'standard']++;
+      this.metrics.samples.push({ ts, bodyAngle, neckAngle, hipDev, headDev });
+    }
+
+    // 实时语音
+    if (hipDev || headDev) {
+      this.badFrames++;
+      if (this.badFrames >= this.cfg.BAD_FRAMES_FOR_VOICE) {
+        speak('保持身体笔直', 'pushup_bodyline');
+        this.badFrames = 0; // 复位，靠语音 cooldown 控频率
+      }
+    } else {
+      this.badFrames = 0;
+    }
+  }
+}
+
 // 全局规则引擎实例 + 规则注册
 const ruleEngine = new RuleEngine();
 ruleEngine.register('jumprope', new JumpRopeCounter(CONFIG.JUMPROPE));
 ruleEngine.register('jumprope', new JumpRopeKneeAngle(CONFIG.KNEE));
 ruleEngine.register('jumprope', new JumpRopePosture(CONFIG.POSTURE));
-// TODO: 第 4 条规则待选（节奏 BPM / 节奏稳定性 / 腾空高度一致性等）：
-// ruleEngine.register('jumprope', new JumpRopeRhythm(...));
+ruleEngine.register('pushup',   new PushupBodyLine(CONFIG.PUSHUP_BODYLINE));
+// TODO: 跳绳第 4 条规则（节奏 BPM / 稳定性等）；俯卧撑第 2 条规则（计数 / 下沉深度等）
+
+/** 根据 sport 设置指标面板的 label 文本（仅在切换运动时调用一次） */
+function setupMetricLabels(sport) {
+  const labels = {
+    jumprope: ['计数', '状态', '左膝角度', '右膝角度', '躯干倾角'],
+    pushup:   ['采样数', '当前状态', '躯干角度', '颈部角度', '偏离类型'],
+  };
+  const arr = labels[sport] || labels.jumprope;
+  document.getElementById('mCountLabel').textContent    = arr[0];
+  document.getElementById('mFsmStateLabel').textContent = arr[1];
+  document.getElementById('mKneeLLabel').textContent    = arr[2];
+  document.getElementById('mKneeRLabel').textContent    = arr[3];
+  document.getElementById('mLeanLabel').textContent     = arr[4];
+}
+
+const _devLabel = {
+  sag: '塌腰', pike: '撅臀',
+  down: '头部下垂', up: '头部后仰',
+};
 
 /** 刷新指标面板 UI（读取当前 sport 的规则 metrics） */
 function refreshMetricsUI() {
   const sportLabel = { jumprope: '跳绳', pushup: '俯卧撑', squat: '深蹲' };
   document.getElementById('mSport').textContent =
     ruleEngine.sport ? (sportLabel[ruleEngine.sport] || ruleEngine.sport) : '—';
+
+  if (ruleEngine.sport === 'pushup') {
+    const m = ruleEngine.getMetrics('pushup_bodyline');
+    if (!m) return;
+    document.getElementById('mCount').textContent = m.framesSeen;
+    const issues = [];
+    if (m.hipDeviation)  issues.push(_devLabel[m.hipDeviation]);
+    if (m.headDeviation) issues.push(_devLabel[m.headDeviation]);
+    document.getElementById('mFsmState').textContent =
+      issues.length === 0 ? '✅ 标准' : '⚠ ' + issues.join(' + ');
+    document.getElementById('mKneeL').textContent =
+      m.bodyAngle != null ? m.bodyAngle.toFixed(0) + '°' : '—';
+    document.getElementById('mKneeR').textContent =
+      m.neckAngle != null ? m.neckAngle.toFixed(0) + '°' : '—';
+    document.getElementById('mLean').textContent =
+      issues.length ? issues.join('、') : '—';
+    return;
+  }
 
   if (ruleEngine.sport === 'jumprope') {
     const c = ruleEngine.getMetrics('jumprope_count') || { count: 0, state: '—', isActive: false };
@@ -1147,12 +1330,124 @@ function buildPostureSection() {
   `;
 }
 
-/** 生成跳绳结束报告（结合运动损伤科学知识） */
+/** 生成俯卧撑·躯干笔直度报告（含运动损伤风险说明） */
+function buildPushupReport() {
+  const m = ruleEngine.getMetrics('pushup_bodyline');
+  if (!m) return '<h3>俯卧撑报告</h3><p>俯卧撑规则未加载。</p>';
+  const total = m.framesSeen;
+  if (total === 0) {
+    return `<h3>俯卧撑·躯干笔直度报告</h3>
+      <p>未捕捉到有效数据。请确保<b>侧面拍摄</b>，画面中能看到<b>耳-肩-髋-踝</b>四个关键点。</p>`;
+  }
+  const cfg = CONFIG.PUSHUP_BODYLINE;
+  const b = m.counts.body;
+  const n = m.counts.neck;
+  const pct = (x) => ((x / total) * 100).toFixed(1) + '%';
+
+  // 平均/极值
+  const bSum = m.samples.reduce((s, x) => s + (x.bodyAngle || 0), 0);
+  const nSum = m.samples.reduce((s, x) => s + (x.neckAngle || 0), 0);
+  const bAvg = (bSum / total).toFixed(1);
+  const nAvg = (nSum / total).toFixed(1);
+  const bMin = Math.min(...m.samples.map(s => s.bodyAngle || Infinity)).toFixed(1);
+  const nMin = Math.min(...m.samples.map(s => s.neckAngle || Infinity)).toFixed(1);
+
+  // 各类问题占比
+  const sagPct  = b.sag  / total;
+  const pikePct = b.pike / total;
+  const dnPct   = n.down / total;
+  const upPct   = n.up   / total;
+  const stdPct  = (b.standard + n.standard) / (total * 2);
+
+  // 整体结论
+  let overallTitle, overallClass;
+  const badRatio = (b.sag + b.pike + n.down + n.up) / (total * 2);
+  if (badRatio < 0.15) {
+    overallClass = 'ok';
+    overallTitle = '✅ 整体动作质量良好';
+  } else if (badRatio < 0.4) {
+    overallClass = 'warn';
+    overallTitle = '⚠ 部分动作偏离标准，需注意';
+  } else {
+    overallClass = 'bad';
+    overallTitle = '⚠ 动作偏离较多，建议调整训练强度';
+  }
+
+  // 各项问题独立给出风险提示
+  const issueBlocks = [];
+  if (sagPct >= 0.15) {
+    issueBlocks.push(`
+      <p class="bad">▌塌腰（hip sag）：${b.sag} 帧（${pct(b.sag)}）</p>
+      <p>髋关节相对肩-踝直线下沉，腰椎呈过度前凸 (lumbar hyperextension)，
+        椎间盘后部与小关节承受额外压力。<b>风险</b>：下腰痛、椎旁肌劳损、
+        长期反复可诱发腰椎间盘问题。<br>
+        <b>纠正</b>：① 主动收紧腹部并夹臀（"骨盆后倾"）让腰背呈中立位；
+        ② 训练前加 1–2 组核心激活（死虫式、平板支撑 30s × 3）；
+        ③ 若标准俯卧撑中保持有困难，先做<b>跪姿俯卧撑</b>降低杠杆负荷。</p>`);
+  }
+  if (pikePct >= 0.15) {
+    issueBlocks.push(`
+      <p class="warn">▌撅臀（hip pike）：${b.pike} 帧（${pct(b.pike)}）</p>
+      <p>髋部上凸使身体呈"倒 V"形，负荷由胸大肌转移到肩前束与三角肌前部，
+        胸部训练效果下降。<b>风险</b>：肩前撞击综合征 (subacromial impingement)、
+        肩袖肌腱过劳；同时常伴随手腕过度背伸压力。<br>
+        <b>纠正</b>：① 想象用胸部贴近地面而不是用屁股发力；
+        ② 强化臀大肌（臀桥、单腿桥）以稳定骨盆；
+        ③ 适度降低组数避免疲劳性代偿。</p>`);
+  }
+  if (dnPct >= 0.15) {
+    issueBlocks.push(`
+      <p class="warn">▌头部下垂（chin tuck/flexion）：${n.down} 帧（${pct(n.down)}）</p>
+      <p>颈椎过度屈曲，下颌内收使颈胸交界 (C7-T1) 张力升高。<b>风险</b>：
+        颈源性头痛、上斜方肌紧张、长期可加重已有的颈椎间盘问题。<br>
+        <b>纠正</b>：眼睛看向身体下方<b>约 30cm 处</b>的地面，
+        让头颈与躯干在一条直线（耳垂-肩峰对齐）。</p>`);
+  }
+  if (upPct >= 0.15) {
+    issueBlocks.push(`
+      <p class="bad">▌头部后仰（cervical hyperextension）：${n.up} 帧（${pct(n.up)}）</p>
+      <p>颈椎过度后伸使颈后小关节 (facet joints) 互相挤压，
+        长期与<b>颈椎小关节综合征</b>、椎动脉受压相关。<br>
+        <b>纠正</b>：① 取消"抬头看前方"的习惯；
+        ② 颈后侧主动延长（"后枕骨向天花板"），下颌微收；
+        ③ 配合<b>颈深屈肌</b>训练（仰卧点头练习）。</p>`);
+  }
+
+  if (issueBlocks.length === 0) {
+    issueBlocks.push(`<p class="ok">未检测到显著偏离动作，继续保持。注意疲劳后期形态崩溃，建议组间充分休息。</p>`);
+  }
+
+  return `
+    <h3>俯卧撑·躯干笔直度报告</h3>
+    <p>有效采样：<b>${total}</b>　|　
+       平均躯干角：<b>${bAvg}°</b>（最低 ${bMin}°，标准 ≥ ${cfg.BODY_MIN}°）　|　
+       平均颈部角：<b>${nAvg}°</b>（最低 ${nMin}°，标准 ≥ ${cfg.NECK_MIN}°）</p>
+    <ul>
+      <li>躯干 — <span class="ok">标准</span>：${b.standard} 帧（${pct(b.standard)}），
+        <span class="bad">塌腰</span>：${b.sag} 帧（${pct(b.sag)}），
+        <span class="warn">撅臀</span>：${b.pike} 帧（${pct(b.pike)}）</li>
+      <li>头颈 — <span class="ok">标准</span>：${n.standard} 帧（${pct(n.standard)}），
+        <span class="warn">下垂</span>：${n.down} 帧（${pct(n.down)}），
+        <span class="bad">后仰</span>：${n.up} 帧（${pct(n.up)}）</li>
+    </ul>
+    <p class="${overallClass}">${overallTitle}</p>
+    ${issueBlocks.join('\n')}
+    <p class="note">说明：躯干角 = 肩-髋-踝三点 3D 夹角；颈部角 = 耳-肩-髋三点 3D 夹角。
+      建议侧面拍摄。本报告基于俯卧撑动作生物力学共识，仅作训练参考，不构成医学诊断。</p>
+  `;
+}
+
+/** 生成结束报告（按 sport 路由） */
 function generateReport() {
   const reportEl = document.getElementById('report');
+  if (ruleEngine.sport === 'pushup') {
+    reportEl.style.display = 'block';
+    reportEl.innerHTML = buildPushupReport();
+    return;
+  }
   if (ruleEngine.sport !== 'jumprope') {
     reportEl.style.display = 'block';
-    reportEl.innerHTML = '<p>请先选择"跳绳"运动模式并完成一段检测后再生成报告。</p>';
+    reportEl.innerHTML = '<p>请先选择运动模式并完成一段检测后再生成报告。</p>';
     return;
   }
   const counter = ruleEngine.getMetrics('jumprope_count') || { count: 0 };
@@ -1445,6 +1740,11 @@ document.querySelectorAll('[data-sport]').forEach(btn => {
     const sport = btn.getAttribute('data-sport');
     console.log('[运动模式] 已切换到：', sport);
     ruleEngine.setSport(sport);
+    setupMetricLabels(sport);
+    // 切换运动时清空报告
+    const r = document.getElementById('report');
+    r.style.display = 'none';
+    r.innerHTML = '';
     refreshMetricsUI();
   });
 });
