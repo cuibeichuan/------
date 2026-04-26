@@ -144,6 +144,55 @@
     pointer-events: none;
   }
 
+  /* ================== 指标面板 ================== */
+  .metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: stretch;
+    background: #1a1d24;
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .metric {
+    flex: 1 1 100px;
+    min-width: 100px;
+    background: #242935;
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .metric-label {
+    font-size: 12px;
+    color: #9aa3b2;
+    letter-spacing: 0.3px;
+  }
+  .metric-value {
+    font-size: 22px;
+    font-weight: 600;
+    color: #e6e8ee;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ================== 报告区 ================== */
+  .report {
+    background: #1a1d24;
+    border-left: 4px solid #3b82f6;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #d8dde7;
+  }
+  .report h3 { margin: 0 0 8px; color: #e6e8ee; font-size: 16px; }
+  .report ul { margin: 6px 0; padding-left: 22px; }
+  .report .ok    { color: #10b981; font-weight: 600; }
+  .report .warn  { color: #f59e0b; font-weight: 600; }
+  .report .bad   { color: #ef4444; font-weight: 600; }
+  .report .note  { color: #9aa3b2; font-size: 12px; margin-top: 8px; }
+
   /* ================== 响应式 ================== */
   @media (max-width: 600px) {
     header h1 { font-size: 18px; }
@@ -189,6 +238,46 @@
     <div class="placeholder" id="placeholder">点击上方按钮开启摄像头或上传视频</div>
   </div>
 
+  <!-- 规则引擎指标面板（根据当前运动模式动态展示） -->
+  <div class="metrics" id="metrics">
+    <div class="metric">
+      <div class="metric-label">当前运动</div>
+      <div class="metric-value" id="mSport">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">计数</div>
+      <div class="metric-value" id="mCount">0</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">状态</div>
+      <div class="metric-value" id="mFsmState">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">左膝角度</div>
+      <div class="metric-value" id="mKneeL">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">右膝角度</div>
+      <div class="metric-value" id="mKneeR">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">躯干倾角</div>
+      <div class="metric-value" id="mLean">—</div>
+    </div>
+  </div>
+
+  <!-- 报告操作 -->
+  <div class="btn-row">
+    <button class="btn" id="btnResetCount">🔄 重置计数</button>
+    <button class="btn primary" id="btnReport">📋 结束并生成报告</button>
+    <label class="btn" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="chkVoice" checked style="margin:0;"> 🔊 语音提醒
+    </label>
+  </div>
+
+  <!-- 报告区（生成后显示） -->
+  <div class="report" id="report" style="display:none;"></div>
+
   <!-- 状态显示 -->
   <div class="status" id="status">
     <span class="dot" id="statusDot"></span>
@@ -231,6 +320,48 @@ const CONFIG = {
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
   },
+
+  // ============ 规则引擎 · 跳绳 ============
+  JUMPROPE: {
+    BASELINE_WINDOW_MS: 2000,   // 基线观察窗口：最近 2 秒双踝 y 的最大值作为"地面"基线
+    RISE_THRESHOLD: 0.03,       // 归一化 y 方向：离开基线 > 3% 画面高度 → 视为起跳
+    FALL_THRESHOLD: 0.015,      // 回到基线下方 1.5% 以内 → 视为落地（滞回区间）
+    MIN_AIR_TIME_MS: 80,        // 最短腾空时间，防抖
+    MIN_CYCLE_MS: 200,          // 单次完整跳的最小周期（对应 ~300 次/分钟上限）
+    MIN_VISIBILITY: 0.5,        // 踝关键点可见度门槛
+    // ---- 活跃跳绳判定（用于过滤准备/结束阶段的零散动作）----
+    MIN_WARMUP_JUMPS: 2,        // 至少累计这么多跳后，才认为"已进入跳绳"
+    ACTIVE_INTERVAL_MS: 1500,   // 相邻两跳间隔 > 该值则视为"已退出跳绳/在休息"
+  },
+  // ============ 实时语音提醒 ============
+  VOICE: {
+    ENABLED: true,           // 总开关，可被 UI 切换
+    COOLDOWN_MS: 4000,       // 同一类提醒的最小间隔（防止每跳都念）
+    LANG: 'zh-CN',
+    RATE: 1.05,              // 语速
+    PITCH: 1.0,
+    VOLUME: 1.0,
+  },
+  // ============ 规则引擎 · 跳绳 · 躯干姿态（核心稳定与重心控制评估）============
+  POSTURE: {
+    STANDARD_MIN: 5,             // 标准下限（含）：轻微前倾
+    STANDARD_MAX: 15,            // 标准上限（含）
+    // < STANDARD_MIN → tooUpright（过于挺直/后仰，重心偏后）
+    // > STANDARD_MAX → overLean  （躯干倾斜过大，核心失控）
+    LM_MIN_VISIBILITY: 0.4,
+    SMOOTH_WINDOW: 5,            // 落地瞬间用最近 N 帧均值，降低瞬时抖动
+  },
+  // ============ 规则引擎 · 跳绳 · 膝关节角度（落地缓冲评估）============
+  KNEE: {
+    STANDARD_MIN: 140,           // 标准下限（含）
+    STANDARD_MAX: 160,           // 标准上限（含）
+    // < STANDARD_MIN  → 屈曲过大（over flexion）
+    // > STANDARD_MAX  → 过伸（over extension）
+    LM_MIN_VISIBILITY: 0.4,      // 髋/膝/踝可见度门槛
+    LABEL_COLOR: '#FFEB3B',      // 画面文字颜色
+    LABEL_STROKE: 'rgba(0,0,0,0.75)',
+    LABEL_FONT: 'bold 16px monospace',
+  },
 };
 
 /* ============================================================
@@ -261,7 +392,8 @@ let cameraStream = null;    // getUserMedia 返回的流
 let videoRafId = null;      // 视频模式渲染 rAF id
 let inferTimerId = null;    // 视频模式推理定时器
 let inferring = false;      // 推理是否进行中（防重入）
-let lastLandmarks = null;   // 最近一次姿态结果（用于叠加绘制）
+let lastLandmarks = null;        // 最近一次姿态结果（屏幕坐标，用于绘制 / 落地基线判断）
+let lastWorldLandmarks = null;   // 最近一次 3D 世界坐标（米单位，用于角度计算）
 let lastFrameTime = 0;      // 摄像头模式帧率限制
 const MIN_FRAME_INTERVAL = 1000 / CONFIG.TARGET_FPS;
 
@@ -310,6 +442,10 @@ function initPose() {
 function onPoseResults(results) {
   // 两种模式统一：只缓存关键点，渲染循环负责画面与骨架叠加
   lastLandmarks = results.poseLandmarks || null;
+  lastWorldLandmarks = results.poseWorldLandmarks || null;
+  // 驱动规则引擎（状态机）
+  ruleEngine.update(lastLandmarks, performance.now(), lastWorldLandmarks);
+  refreshMetricsUI();
 }
 
 /* ============================================================
@@ -359,6 +495,694 @@ function drawSkeleton(landmarks) {
 }
 
 /* ============================================================
+ *  规则引擎（有限状态机 FSM）
+ * ============================================================
+ *  架构：
+ *    RuleEngine      —— 管理当前运动模式下的所有规则实例
+ *    FSMRule         —— 规则基类，封装状态、转移、元数据
+ *    JumpRopeCounter —— 跳绳计数规则（第 1 个）
+ *
+ *  每一帧推理得到 landmarks 后，调用 engine.update(landmarks, ts)，
+ *  引擎分发给当前运动的每条规则；规则内部驱动状态机转移并更新指标。
+ *
+ *  后续可在此框架上扩展剩余 3 个跳绳规则（节奏、姿态质量、节奏稳定性等）。
+ * ============================================================ */
+
+// MediaPipe Pose Landmark 索引（节选常用）
+const LM = {
+  NOSE: 0,
+  LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
+  LEFT_HIP: 23,      RIGHT_HIP: 24,
+  LEFT_KNEE: 25,     RIGHT_KNEE: 26,
+  LEFT_ANKLE: 27,    RIGHT_ANKLE: 28,
+};
+
+/* ---------- 语音提醒（Web Speech API，带按 key 冷却） ---------- */
+const _voiceCooldown = new Map(); // key → lastSpokeTs
+function speak(text, key = text) {
+  if (!CONFIG.VOICE.ENABLED) return;
+  if (typeof window.speechSynthesis === 'undefined') return;
+  const now = performance.now();
+  const last = _voiceCooldown.get(key) || 0;
+  if (now - last < CONFIG.VOICE.COOLDOWN_MS) return;
+  _voiceCooldown.set(key, now);
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang   = CONFIG.VOICE.LANG;
+    u.rate   = CONFIG.VOICE.RATE;
+    u.pitch  = CONFIG.VOICE.PITCH;
+    u.volume = CONFIG.VOICE.VOLUME;
+    window.speechSynthesis.speak(u);
+  } catch (e) { console.warn('speak error', e); }
+}
+function resetVoiceCooldown() { _voiceCooldown.clear(); }
+
+/** 有限状态机规则基类 */
+class FSMRule {
+  constructor(name, initialState = 'INIT') {
+    this.name = name;
+    this.state = initialState;
+    this.prevState = null;
+    this.metrics = {};       // 规则对外暴露的指标（如 count、bpm 等）
+    this.lastTransitionTs = 0;
+    this.engine = null;      // 由 RuleEngine.register 回填
+  }
+  /** 状态转移；子类调用 */
+  transition(next, ts) {
+    if (next === this.state) return false;
+    this.prevState = this.state;
+    this.state = next;
+    this.lastTransitionTs = ts;
+    return true;
+  }
+  /** 向同 sport 下其他规则广播事件 */
+  emit(eventName, payload) {
+    if (this.engine) this.engine.emit(this, eventName, payload);
+  }
+  /** 接收其他规则事件；子类按需重写 */
+  onEvent(_eventName, _payload, _from) { /* override */ }
+  /** 规则主循环；子类实现 */
+  update(_landmarks, _ts) { /* override */ }
+  /** 重置 */
+  reset() {
+    this.state = 'INIT';
+    this.prevState = null;
+    this.metrics = {};
+    this.lastTransitionTs = 0;
+  }
+}
+
+/**
+ * 三点夹角（顶点为 b），返回度数 [0, 180]。
+ * 优先使用 3D 坐标（MediaPipe Pose 的 z 值），以避免侧面拍摄时
+ * 2D 投影使屈膝看上去接近 180° 的失真问题。
+ * 若 landmark 缺少 z（如未来兼容 2D 来源），自动回退到 2D 计算。
+ */
+function angleDeg(a, b, c) {
+  const az = a.z ?? 0, bz = b.z ?? 0, cz = c.z ?? 0;
+  const v1x = a.x - b.x, v1y = a.y - b.y, v1z = az - bz;
+  const v2x = c.x - b.x, v2y = c.y - b.y, v2z = cz - bz;
+  const dot = v1x * v2x + v1y * v2y + v1z * v2z;
+  const m1  = Math.hypot(v1x, v1y, v1z);
+  const m2  = Math.hypot(v2x, v2y, v2z);
+  if (m1 === 0 || m2 === 0) return NaN;
+  let cos = dot / (m1 * m2);
+  cos = Math.max(-1, Math.min(1, cos));
+  return Math.acos(cos) * 180 / Math.PI;
+}
+
+/**
+ * 跳绳计数规则
+ *
+ * 状态机：
+ *   INIT ──(基线建立)──▶ GROUND
+ *   GROUND ──(ankleY 上升超过阈值, 持续 >= MIN_AIR_TIME_MS)──▶ AIR
+ *   AIR    ──(ankleY 回落到基线附近, 周期 >= MIN_CYCLE_MS)──▶ GROUND (count++)
+ *
+ * 信号：双踝 y 坐标均值；y 向下为正，越小代表越高。
+ * 基线：最近 BASELINE_WINDOW_MS 窗口内 y 的最大值（最低位置 = 地面）。
+ * 滞回：起跳阈值 RISE_THRESHOLD 大于落地阈值 FALL_THRESHOLD，防抖动误计。
+ */
+class JumpRopeCounter extends FSMRule {
+  constructor(cfg) {
+    super('jumprope_count', 'INIT');
+    this.cfg = cfg;
+    this.samples = [];       // [{ y, ts }]  y 基线观察窗口
+    this.metrics = this._emptyMetrics();
+    this.airEnterTs = 0;     // 进入 AIR 的时间戳
+    this.lastCountTs = 0;    // 上次计数时间戳（用于 MIN_CYCLE_MS）
+  }
+
+  _emptyMetrics() {
+    return {
+      count: 0,
+      state: 'INIT',
+      isActive: false,        // 是否处于"已进入跳绳节奏"
+      lastIntervalMs: null,   // 上一次跳跃间隔（ms）
+    };
+  }
+
+  reset() {
+    super.reset();
+    this.samples = [];
+    this.metrics = this._emptyMetrics();
+    this.airEnterTs = 0;
+    this.lastCountTs = 0;
+  }
+
+  update(landmarks, ts) {
+    // 闲置过久 → 退出活跃状态（"准备/结束阶段"自动屏蔽）
+    if (this.metrics.isActive && this.lastCountTs > 0 &&
+        ts - this.lastCountTs > this.cfg.ACTIVE_INTERVAL_MS) {
+      this.metrics.isActive = false;
+    }
+
+    if (!landmarks) { this.metrics.state = this.state; return; }
+    const la = landmarks[LM.LEFT_ANKLE];
+    const ra = landmarks[LM.RIGHT_ANKLE];
+    if (!la || !ra) { this.metrics.state = this.state; return; }
+    if ((la.visibility ?? 0) < this.cfg.MIN_VISIBILITY ||
+        (ra.visibility ?? 0) < this.cfg.MIN_VISIBILITY) {
+      this.metrics.state = this.state;
+      return;
+    }
+
+    // 信号：双踝 y 均值（归一化 0~1）
+    const ankleY = (la.y + ra.y) / 2;
+
+    // 维护基线观察窗口（滚动丢弃过期样本）
+    this.samples.push({ y: ankleY, ts });
+    const cutoff = ts - this.cfg.BASELINE_WINDOW_MS;
+    while (this.samples.length && this.samples[0].ts < cutoff) {
+      this.samples.shift();
+    }
+    // 基线 = 窗口内 y 最大值（脚最低 = 地面）
+    let baseline = ankleY;
+    for (const s of this.samples) if (s.y > baseline) baseline = s.y;
+
+    // 窗口样本不足时先建立基线
+    if (this.state === 'INIT') {
+      if (this.samples.length >= 5) this.transition('GROUND', ts);
+      this.metrics.state = this.state;
+      return;
+    }
+
+    // 相对基线的偏移量：正值表示高于基线（脚抬起来了）
+    const liftAmount = baseline - ankleY;
+
+    // 状态机驱动
+    if (this.state === 'GROUND') {
+      if (liftAmount > this.cfg.RISE_THRESHOLD) {
+        this.transition('AIR', ts);
+        this.airEnterTs = ts;
+      }
+    } else if (this.state === 'AIR') {
+      const airDuration = ts - this.airEnterTs;
+      if (liftAmount < this.cfg.FALL_THRESHOLD &&
+          airDuration >= this.cfg.MIN_AIR_TIME_MS) {
+        // 落地 → 计数一次（需满足最小周期）
+        let counted = false;
+        let interval = null;
+        if (ts - this.lastCountTs >= this.cfg.MIN_CYCLE_MS) {
+          interval = this.lastCountTs > 0 ? ts - this.lastCountTs : null;
+          this.metrics.count++;
+          this.lastCountTs = ts;
+          this.metrics.lastIntervalMs = interval;
+          counted = true;
+
+          // 活跃判定：累计跳数 ≥ MIN_WARMUP_JUMPS 且与上一跳间隔 ≤ ACTIVE_INTERVAL_MS
+          this.metrics.isActive =
+            this.metrics.count >= this.cfg.MIN_WARMUP_JUMPS &&
+            interval != null && interval <= this.cfg.ACTIVE_INTERVAL_MS;
+        }
+        this.transition('GROUND', ts);
+        // 广播落地事件，携带活跃状态供其他规则过滤
+        if (counted) this.emit('land', {
+          ts,
+          interval,
+          isActive: this.metrics.isActive,
+        });
+      }
+    }
+
+    this.metrics.state = this.state;
+  }
+}
+
+/** 规则引擎：按运动模式分发 + 规则间事件总线 */
+class RuleEngine {
+  constructor() {
+    this.sport = null;
+    this.rules = new Map();  // sport → FSMRule[]
+  }
+  register(sport, rule) {
+    rule.engine = this;
+    if (!this.rules.has(sport)) this.rules.set(sport, []);
+    this.rules.get(sport).push(rule);
+  }
+  setSport(sport) {
+    this.sport = sport;
+    this.resetCurrent();
+  }
+  resetCurrent() {
+    const list = this.rules.get(this.sport);
+    if (list) list.forEach(r => r.reset());
+  }
+  update(landmarks, ts, worldLandmarks) {
+    if (!this.sport) return;
+    const list = this.rules.get(this.sport);
+    if (!list) return;
+    for (const r of list) r.update(landmarks, ts, worldLandmarks);
+  }
+  /** 事件分发：from 规则向同 sport 下其他规则广播 */
+  emit(from, eventName, payload) {
+    const list = this.rules.get(this.sport);
+    if (!list) return;
+    for (const r of list) {
+      if (r !== from) r.onEvent(eventName, payload, from);
+    }
+  }
+  /** 返回某规则的 metrics */
+  getMetrics(ruleName) {
+    const r = this.getRule(ruleName);
+    return r ? r.metrics : null;
+  }
+  getRule(ruleName) {
+    if (!this.sport) return null;
+    const list = this.rules.get(this.sport);
+    if (!list) return null;
+    return list.find(r => r.name === ruleName) || null;
+  }
+}
+
+/**
+ * 跳绳膝关节角度规则（落地缓冲评估）
+ *
+ * 设计：
+ *  - 实时：每帧用 髋-膝-踝 三点夹角计算左/右膝伸展角度，写入 metrics.currentL/R/Avg
+ *  - 落地采样：订阅 JumpRopeCounter 的 'land' 事件，记录该瞬间膝角并分类
+ *
+ * 分类阈值（运动科学参考）：
+ *  - 标准：140° ≤ angle ≤ 160°
+ *      落地时膝关节适度屈曲，能借助股四头肌、臀大肌的离心收缩有效吸收冲击
+ *  - 屈曲过大：angle < 140°
+ *      膑股关节压强升高，长期与髌股疼痛综合征 (PFPS)、髌腱炎相关
+ *  - 过伸：angle > 160°
+ *      缓冲不足，地面反作用力沿胫骨向上传导，与胫骨骨膜炎、半月板冲击伤、
+ *      应力性骨折等损伤风险相关
+ */
+class JumpRopeKneeAngle extends FSMRule {
+  constructor(cfg) {
+    super('jumprope_knee', 'IDLE');
+    this.cfg = cfg;
+    this.metrics = this._emptyMetrics();
+  }
+  _emptyMetrics() {
+    return {
+      currentL: null,
+      currentR: null,
+      currentAvg: null,
+      samples: [],   // 每次落地一条 { ts, angle, side, category }
+      counts: { standard: 0, overFlexion: 0, overExtension: 0 },
+    };
+  }
+  reset() {
+    super.reset();
+    this.metrics = this._emptyMetrics();
+  }
+
+  update(landmarks, _ts, worldLandmarks) {
+    if (!landmarks) {
+      this.metrics.currentL = this.metrics.currentR = this.metrics.currentAvg = null;
+      return;
+    }
+    const minV = this.cfg.LM_MIN_VISIBILITY;
+    // 屏幕坐标用于可见度筛选与回退角度计算
+    const lh = landmarks[LM.LEFT_HIP],  lk = landmarks[LM.LEFT_KNEE],  la = landmarks[LM.LEFT_ANKLE];
+    const rh = landmarks[LM.RIGHT_HIP], rk = landmarks[LM.RIGHT_KNEE], ra = landmarks[LM.RIGHT_ANKLE];
+    const lOk = lh && lk && la &&
+      (lh.visibility ?? 0) >= minV && (lk.visibility ?? 0) >= minV && (la.visibility ?? 0) >= minV;
+    const rOk = rh && rk && ra &&
+      (rh.visibility ?? 0) >= minV && (rk.visibility ?? 0) >= minV && (ra.visibility ?? 0) >= minV;
+
+    // 角度计算：优先 3D 世界坐标（米单位，对侧面拍摄更稳健）
+    const W = worldLandmarks || landmarks;
+    const wlh = W[LM.LEFT_HIP],  wlk = W[LM.LEFT_KNEE],  wla = W[LM.LEFT_ANKLE];
+    const wrh = W[LM.RIGHT_HIP], wrk = W[LM.RIGHT_KNEE], wra = W[LM.RIGHT_ANKLE];
+
+    this.metrics.currentL = (lOk && wlh && wlk && wla) ? angleDeg(wlh, wlk, wla) : null;
+    this.metrics.currentR = (rOk && wrh && wrk && wra) ? angleDeg(wrh, wrk, wra) : null;
+    if (this.metrics.currentL != null && this.metrics.currentR != null) {
+      this.metrics.currentAvg = (this.metrics.currentL + this.metrics.currentR) / 2;
+    } else {
+      this.metrics.currentAvg = this.metrics.currentL ?? this.metrics.currentR;
+    }
+  }
+
+  onEvent(name, payload) {
+    if (name !== 'land') return;
+    // 仅在"已进入跳绳节奏"时记录，过滤准备/结束阶段的零散动作
+    if (!payload || !payload.isActive) return;
+    const angle = this.metrics.currentAvg;
+    if (angle == null || isNaN(angle)) return;
+    let category;
+    if (angle < this.cfg.STANDARD_MIN)      category = 'overFlexion';
+    else if (angle > this.cfg.STANDARD_MAX) category = 'overExtension';
+    else                                    category = 'standard';
+    this.metrics.counts[category]++;
+    this.metrics.samples.push({
+      ts: payload.ts,
+      angle,
+      angleL: this.metrics.currentL,
+      angleR: this.metrics.currentR,
+      category,
+    });
+    // 语音提醒
+    if (category === 'overExtension') speak('膝盖超伸，注意弯曲', 'knee_overExt');
+    else if (category === 'overFlexion') speak('膝盖弯曲，减少角度', 'knee_overFlex');
+  }
+}
+
+/**
+ * 跳绳躯干姿态规则（核心稳定 / 重心控制评估）
+ *
+ * 设计：
+ *  - 实时：每帧用 髋中点→肩中点 向量与竖直方向的夹角作为"躯干倾角"
+ *          优先使用 worldLandmarks（3D，米单位）以摆脱拍摄视角影响
+ *  - 落地采样：订阅 'land' 事件并仅在 isActive 期记录，与膝角口径一致
+ *  - 平滑：用最近 SMOOTH_WINDOW 帧的均值，避免瞬时抖动
+ *
+ * 分类阈值（运动科学参考）：
+ *  - 标准：5° ≤ lean ≤ 15°
+ *      正常跳绳应保持轻微前倾，重心位于足前掌，便于踝-膝-髋链协同缓冲
+ *  - 过于挺直 / 后仰：lean < 5°
+ *      重心后移，落地多以脚跟先触地，缓冲不足，膝前侧与髌腱负担加重；
+ *      与跟痛症、跖筋膜炎、髌腱炎风险相关
+ *  - 过度倾斜：lean > 15°
+ *      核心稳定性不足；腰椎承受过多剪切力，长期与下腰痛、腹肌-臀部协同
+ *      力量不足关联；同时影响呼吸节奏与跳跃节律
+ */
+class JumpRopePosture extends FSMRule {
+  constructor(cfg) {
+    super('jumprope_posture', 'IDLE');
+    this.cfg = cfg;
+    this.recent = []; // 最近 N 帧倾角，用于平滑
+    this.metrics = this._emptyMetrics();
+  }
+  _emptyMetrics() {
+    return {
+      currentLean: null,            // 实时倾角（度）
+      samples: [],                  // 每次有效落地一条 { ts, lean, category }
+      counts: { standard: 0, tooUpright: 0, overLean: 0 },
+    };
+  }
+  reset() {
+    super.reset();
+    this.recent = [];
+    this.metrics = this._emptyMetrics();
+  }
+
+  update(landmarks, _ts, worldLandmarks) {
+    if (!landmarks) { this.metrics.currentLean = null; return; }
+    const minV = this.cfg.LM_MIN_VISIBILITY;
+    const ls = landmarks[LM.LEFT_SHOULDER], rs = landmarks[LM.RIGHT_SHOULDER];
+    const lh = landmarks[LM.LEFT_HIP],      rh = landmarks[LM.RIGHT_HIP];
+    const ok = ls && rs && lh && rh &&
+      (ls.visibility ?? 0) >= minV && (rs.visibility ?? 0) >= minV &&
+      (lh.visibility ?? 0) >= minV && (rh.visibility ?? 0) >= minV;
+    if (!ok) { this.metrics.currentLean = null; return; }
+
+    // 优先用 3D 世界坐标
+    const W = worldLandmarks || landmarks;
+    const wls = W[LM.LEFT_SHOULDER], wrs = W[LM.RIGHT_SHOULDER];
+    const wlh = W[LM.LEFT_HIP],      wrh = W[LM.RIGHT_HIP];
+    if (!wls || !wrs || !wlh || !wrh) { this.metrics.currentLean = null; return; }
+
+    const sx = (wls.x + wrs.x) / 2;
+    const sy = (wls.y + wrs.y) / 2;
+    const sz = ((wls.z ?? 0) + (wrs.z ?? 0)) / 2;
+    const hx = (wlh.x + wrh.x) / 2;
+    const hy = (wlh.y + wrh.y) / 2;
+    const hz = ((wlh.z ?? 0) + (wrh.z ?? 0)) / 2;
+    // 躯干向量 = 肩中点 - 髋中点
+    const vx = sx - hx, vy = sy - hy, vz = sz - hz;
+    const mag = Math.hypot(vx, vy, vz);
+    if (mag === 0) { this.metrics.currentLean = null; return; }
+    // 与竖直向上方向 (0, -1, 0) 的夹角（y 向下为正，所以 up = (0,-1,0)）
+    let cos = -vy / mag;
+    cos = Math.max(-1, Math.min(1, cos));
+    const lean = Math.acos(cos) * 180 / Math.PI;
+
+    // 平滑窗口
+    this.recent.push(lean);
+    if (this.recent.length > this.cfg.SMOOTH_WINDOW) this.recent.shift();
+    const smoothed = this.recent.reduce((s, x) => s + x, 0) / this.recent.length;
+
+    this.metrics.currentLean = smoothed;
+  }
+
+  onEvent(name, payload) {
+    if (name !== 'land') return;
+    if (!payload || !payload.isActive) return;
+    const lean = this.metrics.currentLean;
+    if (lean == null || isNaN(lean)) return;
+    let category;
+    if (lean < this.cfg.STANDARD_MIN)      category = 'tooUpright';
+    else if (lean > this.cfg.STANDARD_MAX) category = 'overLean';
+    else                                   category = 'standard';
+    this.metrics.counts[category]++;
+    this.metrics.samples.push({ ts: payload.ts, lean, category });
+    // 语音提醒（两种偏离共用同一句）
+    if (category !== 'standard') speak('注意保持躯干正直', 'posture');
+  }
+}
+
+// 全局规则引擎实例 + 规则注册
+const ruleEngine = new RuleEngine();
+ruleEngine.register('jumprope', new JumpRopeCounter(CONFIG.JUMPROPE));
+ruleEngine.register('jumprope', new JumpRopeKneeAngle(CONFIG.KNEE));
+ruleEngine.register('jumprope', new JumpRopePosture(CONFIG.POSTURE));
+// TODO: 第 4 条规则待选（节奏 BPM / 节奏稳定性 / 腾空高度一致性等）：
+// ruleEngine.register('jumprope', new JumpRopeRhythm(...));
+
+/** 刷新指标面板 UI（读取当前 sport 的规则 metrics） */
+function refreshMetricsUI() {
+  const sportLabel = { jumprope: '跳绳', pushup: '俯卧撑', squat: '深蹲' };
+  document.getElementById('mSport').textContent =
+    ruleEngine.sport ? (sportLabel[ruleEngine.sport] || ruleEngine.sport) : '—';
+
+  if (ruleEngine.sport === 'jumprope') {
+    const c = ruleEngine.getMetrics('jumprope_count') || { count: 0, state: '—', isActive: false };
+    document.getElementById('mCount').textContent = c.count;
+    // 状态：FSM + 活跃标记（活跃才会真正参与膝角统计）
+    const activeTag = c.isActive ? '🟢 活跃' : '⚪ 准备/休息';
+    document.getElementById('mFsmState').textContent = `${c.state} · ${activeTag}`;
+
+    const k = ruleEngine.getMetrics('jumprope_knee');
+    document.getElementById('mKneeL').textContent =
+      (k && k.currentL != null) ? k.currentL.toFixed(0) + '°' : '—';
+    document.getElementById('mKneeR').textContent =
+      (k && k.currentR != null) ? k.currentR.toFixed(0) + '°' : '—';
+
+    const p = ruleEngine.getMetrics('jumprope_posture');
+    document.getElementById('mLean').textContent =
+      (p && p.currentLean != null) ? p.currentLean.toFixed(0) + '°' : '—';
+  } else {
+    document.getElementById('mCount').textContent = '—';
+    document.getElementById('mFsmState').textContent = '—';
+    document.getElementById('mKneeL').textContent = '—';
+    document.getElementById('mKneeR').textContent = '—';
+    document.getElementById('mLean').textContent = '—';
+  }
+}
+
+/**
+ * 在 canvas 上叠加规则相关的标注（如膝角文字）。
+ * 注意：此函数应在 ctx.restore()（取消摄像头镜像变换）之后调用，
+ *       以保证文字方向正确。`mirrored` 用于把 landmark x 取镜像。
+ */
+function drawAnnotations(landmarks, mirrored) {
+  if (!landmarks || ruleEngine.sport !== 'jumprope') return;
+  const knee = ruleEngine.getMetrics('jumprope_knee');
+  if (!knee) return;
+  const cfg = CONFIG.KNEE;
+  ctx.save();
+  ctx.font = cfg.LABEL_FONT;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = cfg.LABEL_STROKE;
+  ctx.textBaseline = 'middle';
+
+  const drawAt = (lm, text, leftSide) => {
+    if (!lm) return;
+    let x = lm.x * canvas.width;
+    if (mirrored) x = canvas.width - x;
+    const y = lm.y * canvas.height;
+    // 文字根据左右膝放在外侧
+    const tx = leftSide ? x - 8 : x + 8;
+    ctx.textAlign = leftSide ? 'right' : 'left';
+    // 颜色：超出标准用红色，标准用绿色
+    let color = cfg.LABEL_COLOR;
+    const angle = parseFloat(text);
+    if (!isNaN(angle)) {
+      if (angle < cfg.STANDARD_MIN || angle > cfg.STANDARD_MAX) color = '#FF5252';
+      else color = '#69F0AE';
+    }
+    ctx.fillStyle = color;
+    ctx.strokeText(text, tx, y);
+    ctx.fillText(text, tx, y);
+  };
+
+  // 由于摄像头镜像，画面上"左侧"其实是右膝，反之亦然；
+  // 但 landmark 的 LEFT_KNEE 是被检测人的左膝，画面镜像后位置与画面方向一致显示即可
+  const lk = landmarks[LM.LEFT_KNEE];
+  const rk = landmarks[LM.RIGHT_KNEE];
+  if (lk && knee.currentL != null) drawAt(lk, `L:${knee.currentL.toFixed(0)}°`, true);
+  if (rk && knee.currentR != null) drawAt(rk, `R:${knee.currentR.toFixed(0)}°`, false);
+  ctx.restore();
+}
+
+/** 生成报告·躯干姿态评估段（运动损伤科学解释） */
+function buildPostureSection() {
+  const p = ruleEngine.getMetrics('jumprope_posture');
+  if (!p) return '';
+  const total = p.samples.length;
+  const cfg = CONFIG.POSTURE;
+  if (total === 0) {
+    return `
+      <h3 style="margin-top:14px;">躯干姿态评估</h3>
+      <p>未捕捉到落地躯干数据（需肩与髋同时清晰可见）。</p>`;
+  }
+  const c = p.counts;
+  const pct = (n) => ((n / total) * 100).toFixed(1) + '%';
+  const sum = p.samples.reduce((s, x) => s + x.lean, 0);
+  const avg = (sum / total).toFixed(1);
+  const minL = Math.min(...p.samples.map(s => s.lean)).toFixed(1);
+  const maxL = Math.max(...p.samples.map(s => s.lean)).toFixed(1);
+
+  const sorted = Object.entries(c).sort((a, b) => b[1] - a[1]);
+  const mainCat = sorted[0][0];
+
+  let title, advice, klass;
+  if (mainCat === 'standard' && c.standard / total >= 0.6) {
+    klass = 'ok';
+    title = '✅ 躯干姿态控制良好';
+    advice = `多数落地时刻躯干倾角处于 <b>${cfg.STANDARD_MIN}°–${cfg.STANDARD_MAX}°</b>，
+      重心位于足前掌正上方，踝-膝-髋形成完整缓冲链；核心肌群（腹横肌、多裂肌、臀中肌）
+      工作有效。继续保持，建议训练中搭配 1–2 组核心稳定性训练（死虫、鸟狗）以维持。`;
+  } else if (mainCat === 'tooUpright') {
+    klass = 'warn';
+    title = '⚠ 躯干过于挺直 / 后仰（&lt; ' + cfg.STANDARD_MIN + '°）';
+    advice = `躯干接近垂直甚至后仰会让<b>重心后移</b>，落地时常以脚跟先触地，
+      地面反作用力直接传至膝关节后方与跟骨，缓冲不足；长期与<b>跟痛症</b>、
+      <b>跖筋膜炎</b>、<b>髌腱炎</b>等过劳性损伤相关，并降低跳跃节律稳定性。<br>
+      <b>建议：</b>① 主动收紧腹部、轻微前倾躯干，让<b>耳-肩-髋-踝</b>大致连成略前倾直线；
+      ② 想象"用前脚掌弹地"，避免脚跟拍地；
+      ③ 做髋屈肌（如弓步拉伸）与踝背屈灵活性训练；
+      ④ 跳前在原地做几次轻跳找到自然前倾感再开始。`;
+  } else if (mainCat === 'overLean') {
+    klass = 'bad';
+    title = '⚠ 躯干过度倾斜（&gt; ' + cfg.STANDARD_MAX + '°）';
+    advice = `躯干过度前倾 / 侧倾说明<b>核心稳定性不足</b>，腰椎承受较大剪切力，
+      与<b>非特异性下腰痛 (low back pain)</b>、<b>椎旁肌劳损</b>、<b>腹臀链失衡</b> 相关；
+      同时上身代偿动作打乱呼吸节律，导致跳绳易疲劳、容易绊绳。<br>
+      <b>建议：</b>① 训练前激活核心（死虫式、平板支撑、鸟狗），并加入臀中肌训练（蚌式、单腿桥）；
+      ② 跳绳时刻意"挺胸抬头看前方"，将重心提回到足前掌；
+      ③ 控制每组时长，疲劳时立即停下休息——疲劳是姿态崩溃的主要诱因；
+      ④ 若伴随腰部酸痛，先停训并评估腰椎-骨盆灵活性。`;
+  } else {
+    klass = 'warn';
+    title = '⚠ 躯干姿态分布偏离标准';
+    advice = `多数落地躯干倾角不在 ${cfg.STANDARD_MIN}°–${cfg.STANDARD_MAX}° 范围。
+      请结合上方分项次数：偏挺直→刻意前倾、找前脚掌弹地感；偏倾斜→加强核心与臀中肌、控制单次时长。`;
+  }
+
+  return `
+    <h3 style="margin-top:14px;">躯干姿态评估</h3>
+    <p>落地采样：<b>${total}</b>　|　平均躯干倾角：<b>${avg}°</b>　（最小 ${minL}° / 最大 ${maxL}°）</p>
+    <ul>
+      <li><span class="ok">标准</span>（${cfg.STANDARD_MIN}°–${cfg.STANDARD_MAX}°）：
+        ${c.standard} 次（${pct(c.standard)}）</li>
+      <li><span class="warn">过于挺直/后仰</span>（&lt; ${cfg.STANDARD_MIN}°）：
+        ${c.tooUpright} 次（${pct(c.tooUpright)}）</li>
+      <li><span class="bad">过度倾斜</span>（&gt; ${cfg.STANDARD_MAX}°）：
+        ${c.overLean} 次（${pct(c.overLean)}）</li>
+    </ul>
+    <p class="${klass}">${title}</p>
+    <p>${advice}</p>
+  `;
+}
+
+/** 生成跳绳结束报告（结合运动损伤科学知识） */
+function generateReport() {
+  const reportEl = document.getElementById('report');
+  if (ruleEngine.sport !== 'jumprope') {
+    reportEl.style.display = 'block';
+    reportEl.innerHTML = '<p>请先选择"跳绳"运动模式并完成一段检测后再生成报告。</p>';
+    return;
+  }
+  const counter = ruleEngine.getMetrics('jumprope_count') || { count: 0 };
+  const knee    = ruleEngine.getMetrics('jumprope_knee');
+  const total   = knee ? knee.samples.length : 0;
+
+  if (total === 0) {
+    reportEl.style.display = 'block';
+    reportEl.innerHTML =
+      '<h3>跳绳报告</h3><p>未捕捉到落地膝角数据。请确保画面中能看到完整下肢（髋-膝-踝），' +
+      '并完成至少一次落地后再生成报告。</p>' + buildPostureSection();
+    return;
+  }
+
+  const c   = knee.counts;
+  const pct = (n) => ((n / total) * 100).toFixed(1) + '%';
+  const sum = knee.samples.reduce((s, x) => s + x.angle, 0);
+  const avg = (sum / total).toFixed(1);
+  const minA = Math.min(...knee.samples.map(s => s.angle)).toFixed(1);
+  const maxA = Math.max(...knee.samples.map(s => s.angle)).toFixed(1);
+
+  // 主导档位
+  const sorted = Object.entries(c).sort((a, b) => b[1] - a[1]);
+  const mainCat = sorted[0][0];
+
+  // 结论 + 运动损伤科学解释
+  let title, advice, klass;
+  if (mainCat === 'standard' && c.standard / total >= 0.6) {
+    klass = 'ok';
+    title = '✅ 落地缓冲表现良好';
+    advice = `多数落地膝角处于 <b>${CONFIG.KNEE.STANDARD_MIN}°–${CONFIG.KNEE.STANDARD_MAX}°</b> 的安全区间。
+      在此范围内，膝关节通过股四头肌、臀大肌的<b>离心收缩</b>有效吸收着地冲击，地面反作用力被
+      髋-膝-踝多关节链共同分担，膑股关节压强与胫骨纵向冲击均处于较低水平。
+      建议保持现有落地策略；连续训练 30 分钟左右安排短休息，避免疲劳累积导致缓冲质量下降。`;
+  } else if (mainCat === 'overFlexion') {
+    klass = 'warn';
+    title = '⚠ 落地屈曲过大（&lt; ' + CONFIG.KNEE.STANDARD_MIN + '°）';
+    advice = `屈曲幅度过大会显著抬高<b>膑股关节接触压强 (patellofemoral joint stress)</b>，
+      长期反复负荷与<b>髌股疼痛综合征 (PFPS)</b>、<b>髌腱炎 (jumper's knee)</b> 高度相关；
+      同时股四头肌离心负荷上升，膝前与大腿前侧肌肉酸痛、拉伤风险增加。<br>
+      <b>建议：</b>① 训练前激活臀大肌与核心（臀桥、蚌式、平板支撑）以分担落地负荷；
+      ② 强化"轻落地"意识——前脚掌先着地，膝关节<b>微屈缓冲</b>即可，不必深蹲式着地；
+      ③ 控制单次跳绳时长，分组进行；④ 训练后冰敷与拉伸股四头肌、髂胫束。`;
+  } else if (mainCat === 'overExtension') {
+    klass = 'bad';
+    title = '⚠ 落地过伸（&gt; ' + CONFIG.KNEE.STANDARD_MAX + '°）';
+    advice = `膝关节几乎完全伸直状态下接受冲击，缓冲机制基本失效，地面反作用力沿胫骨纵向上传，
+      与<b>胫骨骨膜炎 (shin splints)</b>、<b>半月板冲击伤</b>、<b>胫骨/跖骨应力性骨折</b>
+      等慢性损伤相关；过伸还会让交叉韧带处于不利负荷角度。<br>
+      <b>建议：</b>① 主动降低重心，落地时<b>有意识屈膝 20°–30°</b>；
+      ② 强化小腿三头肌与足底内在肌（提踵、足趾抓毛巾、平衡板训练）；
+      ③ 选择缓冲良好的运动鞋与稍具弹性的场地（避免水泥地直接落地）；
+      ④ 若已有膝、胫前疼痛，先停训并就诊评估。`;
+  } else {
+    klass = 'warn';
+    title = '⚠ 落地角度分布偏离标准';
+    advice = `多数落地膝角不在 ${CONFIG.KNEE.STANDARD_MIN}°–${CONFIG.KNEE.STANDARD_MAX}° 范围内，
+      建议结合上方分项数据分别针对屈曲过大与过伸的次数采取相应调整：
+      屈曲过大→减小下蹲幅度、注重轻落地；过伸→主动屈膝缓冲、加强小腿力量。`;
+  }
+
+  reportEl.style.display = 'block';
+  reportEl.innerHTML = `
+    <h3>跳绳膝关节落地缓冲报告</h3>
+    <p>总跳跃次数：<b>${counter.count}</b>　|　落地采样：<b>${total}</b>　|　
+       平均落地膝角：<b>${avg}°</b>　（最小 ${minA}° / 最大 ${maxA}°）</p>
+    <ul>
+      <li><span class="ok">标准</span>（${CONFIG.KNEE.STANDARD_MIN}°–${CONFIG.KNEE.STANDARD_MAX}°）：
+        ${c.standard} 次（${pct(c.standard)}）</li>
+      <li><span class="warn">屈曲过大</span>（&lt; ${CONFIG.KNEE.STANDARD_MIN}°）：
+        ${c.overFlexion} 次（${pct(c.overFlexion)}）</li>
+      <li><span class="bad">过伸</span>（&gt; ${CONFIG.KNEE.STANDARD_MAX}°）：
+        ${c.overExtension} 次（${pct(c.overExtension)}）</li>
+    </ul>
+    <p class="${klass}">${title}</p>
+    <p>${advice}</p>
+    ${buildPostureSection()}
+    <p class="note">说明：膝角 = 髋-膝-踝三点 3D 夹角（180° = 完全伸直）；
+      躯干倾角 = 髋中点→肩中点向量与竖直方向的 3D 夹角。
+      所有采样仅在"活跃跳绳"期记录。本报告基于膝关节落地缓冲与核心控制的运动生物力学共识，
+      仅作训练参考，不构成医学诊断。</p>
+  `;
+}
+
+/* ============================================================
  *  摄像头模式
  * ============================================================ */
 async function startCamera() {
@@ -402,6 +1226,8 @@ async function startCamera() {
         ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
         if (lastLandmarks) drawSkeleton(lastLandmarks);
         ctx.restore();
+        // 文字标注（不受镜像变换影响）
+        if (lastLandmarks) drawAnnotations(lastLandmarks, true);
       }
       videoRafId = requestAnimationFrame(renderLoop);
     };
@@ -470,6 +1296,7 @@ async function startVideoFromFile(file) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
       if (lastLandmarks) drawSkeleton(lastLandmarks);
+      if (lastLandmarks) drawAnnotations(lastLandmarks, false);
     }
     if (videoEl.ended) setStatus('视频播放结束', 'ok');
     videoRafId = requestAnimationFrame(renderLoop);
@@ -555,19 +1382,47 @@ btnPause.addEventListener('click', () => {
   if (mode === 'video') videoEl.pause();
 });
 
-// 运动模式选择按钮（暂时仅 console.log）
+// 运动模式选择按钮：切换规则引擎运动类型，并重置计数
 document.querySelectorAll('[data-sport]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('[data-sport]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     const sport = btn.getAttribute('data-sport');
     console.log('[运动模式] 已切换到：', sport);
+    ruleEngine.setSport(sport);
+    refreshMetricsUI();
   });
+});
+
+// 重置计数按钮（同时清空报告 & 语音冷却）
+document.getElementById('btnResetCount').addEventListener('click', () => {
+  ruleEngine.resetCurrent();
+  resetVoiceCooldown();
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  const r = document.getElementById('report');
+  r.style.display = 'none';
+  r.innerHTML = '';
+  refreshMetricsUI();
+});
+
+// 语音提醒开关
+const chkVoice = document.getElementById('chkVoice');
+chkVoice.checked = CONFIG.VOICE.ENABLED;
+chkVoice.addEventListener('change', () => {
+  CONFIG.VOICE.ENABLED = chkVoice.checked;
+  if (!chkVoice.checked && window.speechSynthesis) window.speechSynthesis.cancel();
+});
+
+// 生成报告按钮
+document.getElementById('btnReport').addEventListener('click', () => {
+  generateReport();
+  document.getElementById('report').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
 // 初始状态
 setStatus('空闲', 'idle');
 showPlaceholder(true);
+refreshMetricsUI();
 </script>
 </body>
 </html>
