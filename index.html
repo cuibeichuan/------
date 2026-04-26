@@ -340,6 +340,16 @@ const CONFIG = {
     MIN_WARMUP_JUMPS: 2,        // 至少累计这么多跳后，才认为"已进入跳绳"
     ACTIVE_INTERVAL_MS: 1500,   // 相邻两跳间隔 > 该值则视为"已退出跳绳/在休息"
   },
+  // ============ 规则引擎 · 俯卧撑 · 肘关节角度（计数 + 深度 + 锁死评估）============
+  PUSHUP_ELBOW: {
+    UP_THRESHOLD: 150,         // 双肘均值 > 该值 → 进入 UP 态
+    DOWN_THRESHOLD: 100,       // 双肘均值 < 该值 → 进入 DOWN 态（滞回区间）
+    DEPTH_STANDARD: 90,        // 本 rep 最小肘角 ≤ 该值 视为下沉到位
+    DEPTH_SHALLOW: 110,        // 本 rep 最小肘角 > 该值 视为深度不足
+    LOCKOUT_THRESHOLD: 175,    // 本 rep 最大肘角 > 该值 视为肘锁死
+    MIN_REP_MS: 600,           // 单次 rep 最小周期（防抖）
+    LM_MIN_VISIBILITY: 0.4,
+  },
   // ============ 规则引擎 · 俯卧撑 · 躯干笔直度 ============
   PUSHUP_BODYLINE: {
     BODY_MIN: 165,             // 肩-髋-踝标准下限（侧面 ≈ 180°）
@@ -528,6 +538,8 @@ const LM = {
   NOSE: 0,
   LEFT_EAR: 7,       RIGHT_EAR: 8,
   LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
+  LEFT_ELBOW: 13,    RIGHT_ELBOW: 14,
+  LEFT_WRIST: 15,    RIGHT_WRIST: 16,
   LEFT_HIP: 23,      RIGHT_HIP: 24,
   LEFT_KNEE: 25,     RIGHT_KNEE: 26,
   LEFT_ANKLE: 27,    RIGHT_ANKLE: 28,
@@ -1138,19 +1150,150 @@ class PushupBodyLine extends FSMRule {
   }
 }
 
+/**
+ * 俯卧撑·肘关节角度规则（rep 计数 + 下沉深度 + 肘锁死评估）
+ *
+ * 信号：双肘角度 = ∠(肩, 肘, 腕)；以双侧均值驱动 FSM，滞回阈值防抖。
+ * 状态机：INIT → UP ↔ DOWN；完成一次 UP→DOWN→UP 视为 1 rep。
+ *
+ * 每次 rep 结束时评估：
+ *   - minElbow（rep 最低肘角）：
+ *       ≤ DEPTH_STANDARD(90°)        → 到位
+ *       DEPTH_STANDARD..DEPTH_SHALLOW → 勉强（仍计入到位）
+ *       > DEPTH_SHALLOW(110°)        → 深度不足 → 语音"下沉再深一些"
+ *   - maxElbow（rep 最高肘角）：
+ *       > LOCKOUT_THRESHOLD(175°)    → 肘锁死 → 语音"注意肘关节不要锁死"
+ *
+ * 运动损伤风险：
+ *   - 深度不足：胸大肌动程缩短，训练效果打折；易养成代偿习惯
+ *   - 肘锁死（lockout）：冲击通过肘鹰嘴直接传递到关节软骨、尺侧副韧带受力，
+ *     长期反复与肘关节慢性滑囊炎、鹰嘴应力骨折相关
+ */
+class PushupElbow extends FSMRule {
+  constructor(cfg) {
+    super('pushup_elbow', 'INIT');
+    this.cfg = cfg;
+    this.metrics = this._emptyMetrics();
+    this.repStartTs = 0;
+    this.lastUpTs = 0;
+  }
+  _emptyMetrics() {
+    return {
+      count: 0,
+      state: 'INIT',
+      currentL: null,
+      currentR: null,
+      currentAvg: null,
+      repMin: null,         // 当前 rep 最低肘角
+      repMax: null,         // 当前 rep 最高肘角
+      reps: [],             // [{ts, minAngle, maxAngle, depthOk, lockout}]
+      depthCounts:   { ok: 0, shallow: 0 },
+      lockoutCounts: { ok: 0, locked: 0 },
+    };
+  }
+  reset() {
+    super.reset();
+    this.metrics = this._emptyMetrics();
+    this.repStartTs = 0;
+    this.lastUpTs = 0;
+  }
+
+  update(landmarks, ts, worldLandmarks) {
+    if (!landmarks) { this._resetCurrent(); return; }
+    const minV = this.cfg.LM_MIN_VISIBILITY;
+    const W = worldLandmarks || landmarks;
+
+    const calcSide = (S, E, Wr) => {
+      const ps = landmarks[S], pe = landmarks[E], pw = landmarks[Wr];
+      if (!ps || !pe || !pw) return null;
+      if ((ps.visibility ?? 0) < minV || (pe.visibility ?? 0) < minV || (pw.visibility ?? 0) < minV) return null;
+      const ws = W[S], we = W[E], ww = W[Wr];
+      if (!ws || !we || !ww) return null;
+      return angleDeg(ws, we, ww);
+    };
+    const L = calcSide(LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,  LM.LEFT_WRIST);
+    const R = calcSide(LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
+
+    this.metrics.currentL = L;
+    this.metrics.currentR = R;
+    let avg;
+    if (L != null && R != null) avg = (L + R) / 2;
+    else avg = L ?? R ?? null;
+    this.metrics.currentAvg = avg;
+    if (avg == null || isNaN(avg)) { this.metrics.state = this.state; return; }
+
+    // FSM（滞回）
+    if (this.state === 'INIT') {
+      if (avg > this.cfg.UP_THRESHOLD) {
+        this.transition('UP', ts);
+        this.lastUpTs = ts;
+        this._resetRepExtremes(avg);
+      }
+    } else if (this.state === 'UP') {
+      // 持续更新极值
+      this._updateExtremes(avg);
+      if (avg < this.cfg.DOWN_THRESHOLD) {
+        this.transition('DOWN', ts);
+        this.repStartTs = this.lastUpTs;
+        this._updateExtremes(avg);
+      }
+    } else if (this.state === 'DOWN') {
+      this._updateExtremes(avg);
+      if (avg > this.cfg.UP_THRESHOLD &&
+          ts - this.repStartTs >= this.cfg.MIN_REP_MS) {
+        // 完成一次 rep：评估并重置极值
+        this._finishRep(ts);
+        this.transition('UP', ts);
+        this.lastUpTs = ts;
+        this._resetRepExtremes(avg);
+      }
+    }
+    this.metrics.state = this.state;
+  }
+
+  _resetCurrent() {
+    this.metrics.currentL = this.metrics.currentR = this.metrics.currentAvg = null;
+    this.metrics.state = this.state;
+  }
+  _resetRepExtremes(avg) {
+    this.metrics.repMin = avg;
+    this.metrics.repMax = avg;
+  }
+  _updateExtremes(avg) {
+    if (this.metrics.repMin == null || avg < this.metrics.repMin) this.metrics.repMin = avg;
+    if (this.metrics.repMax == null || avg > this.metrics.repMax) this.metrics.repMax = avg;
+  }
+  _finishRep(ts) {
+    const minA = this.metrics.repMin;
+    const maxA = this.metrics.repMax;
+    const depthOk = minA != null && minA <= this.cfg.DEPTH_SHALLOW;
+    const locked  = maxA != null && maxA >  this.cfg.LOCKOUT_THRESHOLD;
+    this.metrics.count++;
+    this.metrics.depthCounts[depthOk ? 'ok' : 'shallow']++;
+    this.metrics.lockoutCounts[locked ? 'locked' : 'ok']++;
+    this.metrics.reps.push({
+      ts, minAngle: minA, maxAngle: maxA, depthOk, lockout: locked,
+    });
+    // 语音反馈
+    if (!depthOk) speak('下沉再深一些', 'pushup_depth');
+    if (locked)   speak('注意肘关节，不要锁死', 'pushup_lockout');
+  }
+}
+
 // 全局规则引擎实例 + 规则注册
 const ruleEngine = new RuleEngine();
 ruleEngine.register('jumprope', new JumpRopeCounter(CONFIG.JUMPROPE));
 ruleEngine.register('jumprope', new JumpRopeKneeAngle(CONFIG.KNEE));
 ruleEngine.register('jumprope', new JumpRopePosture(CONFIG.POSTURE));
 ruleEngine.register('pushup',   new PushupBodyLine(CONFIG.PUSHUP_BODYLINE));
-// TODO: 跳绳第 4 条规则（节奏 BPM / 稳定性等）；俯卧撑第 2 条规则（计数 / 下沉深度等）
+ruleEngine.register('pushup',   new PushupElbow(CONFIG.PUSHUP_ELBOW));
+// TODO: 跳绳第 4 条规则（节奏 BPM / 稳定性等）
 
 /** 根据 sport 设置指标面板的 label 文本（仅在切换运动时调用一次） */
 function setupMetricLabels(sport) {
   const labels = {
-    jumprope: ['计数', '状态', '左膝角度', '右膝角度', '躯干倾角'],
-    pushup:   ['采样数', '当前状态', '躯干角度', '颈部角度', '偏离类型'],
+    jumprope: ['计数', '状态',       '左膝角度', '右膝角度', '躯干倾角'],
+    pushup:   ['完成次数', '肘角 L/R', '躯干角度', '颈部角度', '偏离类型'],
   };
   const arr = labels[sport] || labels.jumprope;
   document.getElementById('mCountLabel').textContent    = arr[0];
@@ -1172,20 +1315,24 @@ function refreshMetricsUI() {
     ruleEngine.sport ? (sportLabel[ruleEngine.sport] || ruleEngine.sport) : '—';
 
   if (ruleEngine.sport === 'pushup') {
-    const m = ruleEngine.getMetrics('pushup_bodyline');
-    if (!m) return;
-    document.getElementById('mCount').textContent = m.framesSeen;
+    const bl = ruleEngine.getMetrics('pushup_bodyline');
+    const el = ruleEngine.getMetrics('pushup_elbow');
+    // 完成次数：肘角规则驱动
+    document.getElementById('mCount').textContent = el ? el.count : 0;
+    // 肘角 L/R：直接显示双肘角度
+    const lStr = (el && el.currentL != null) ? `L ${el.currentL.toFixed(0)}°` : 'L —';
+    const rStr = (el && el.currentR != null) ? `R ${el.currentR.toFixed(0)}°` : 'R —';
+    document.getElementById('mFsmState').textContent = `${lStr}  ${rStr}`;
+    // 躯干角 / 颈部角 / 偏离
     const issues = [];
-    if (m.hipDeviation)  issues.push(_devLabel[m.hipDeviation]);
-    if (m.headDeviation) issues.push(_devLabel[m.headDeviation]);
-    document.getElementById('mFsmState').textContent =
-      issues.length === 0 ? '✅ 标准' : '⚠ ' + issues.join(' + ');
+    if (bl && bl.hipDeviation)  issues.push(_devLabel[bl.hipDeviation]);
+    if (bl && bl.headDeviation) issues.push(_devLabel[bl.headDeviation]);
     document.getElementById('mKneeL').textContent =
-      m.bodyAngle != null ? m.bodyAngle.toFixed(0) + '°' : '—';
+      (bl && bl.bodyAngle != null) ? bl.bodyAngle.toFixed(0) + '°' : '—';
     document.getElementById('mKneeR').textContent =
-      m.neckAngle != null ? m.neckAngle.toFixed(0) + '°' : '—';
+      (bl && bl.neckAngle != null) ? bl.neckAngle.toFixed(0) + '°' : '—';
     document.getElementById('mLean').textContent =
-      issues.length ? issues.join('、') : '—';
+      issues.length ? '⚠ ' + issues.join('、') : '✅ 标准';
     return;
   }
 
@@ -1336,8 +1483,10 @@ function buildPushupReport() {
   if (!m) return '<h3>俯卧撑报告</h3><p>俯卧撑规则未加载。</p>';
   const total = m.framesSeen;
   if (total === 0) {
-    return `<h3>俯卧撑·躯干笔直度报告</h3>
-      <p>未捕捉到有效数据。请确保<b>侧面拍摄</b>，画面中能看到<b>耳-肩-髋-踝</b>四个关键点。</p>`;
+    return `<h3>俯卧撑评估报告</h3>
+      <h4>1) 躯干笔直度</h4>
+      <p>未捕捉到躯干线数据。请确保<b>侧面拍摄</b>，画面中能看到<b>耳-肩-髋-踝</b>四个关键点。</p>
+      ${buildPushupElbowSection()}`;
   }
   const cfg = CONFIG.PUSHUP_BODYLINE;
   const b = m.counts.body;
@@ -1418,7 +1567,8 @@ function buildPushupReport() {
   }
 
   return `
-    <h3>俯卧撑·躯干笔直度报告</h3>
+    <h3>俯卧撑评估报告</h3>
+    <h4 style="margin-top:10px;">1) 躯干笔直度</h4>
     <p>有效采样：<b>${total}</b>　|　
        平均躯干角：<b>${bAvg}°</b>（最低 ${bMin}°，标准 ≥ ${cfg.BODY_MIN}°）　|　
        平均颈部角：<b>${nAvg}°</b>（最低 ${nMin}°，标准 ≥ ${cfg.NECK_MIN}°）</p>
@@ -1432,8 +1582,71 @@ function buildPushupReport() {
     </ul>
     <p class="${overallClass}">${overallTitle}</p>
     ${issueBlocks.join('\n')}
-    <p class="note">说明：躯干角 = 肩-髋-踝三点 3D 夹角；颈部角 = 耳-肩-髋三点 3D 夹角。
-      建议侧面拍摄。本报告基于俯卧撑动作生物力学共识，仅作训练参考，不构成医学诊断。</p>
+    ${buildPushupElbowSection()}
+    <p class="note">说明：躯干角 = 肩-髋-踝 3D 夹角；颈部角 = 耳-肩-髋 3D 夹角；
+      肘角 = 肩-肘-腕 3D 夹角（180° = 手臂完全伸直）。建议侧面拍摄。
+      本报告基于俯卧撑动作生物力学共识，仅作训练参考，不构成医学诊断。</p>
+  `;
+}
+
+/** 俯卧撑·肘关节评估段（rep 计数 + 深度 + 锁死） */
+function buildPushupElbowSection() {
+  const m = ruleEngine.getMetrics('pushup_elbow');
+  if (!m) return '';
+  const reps = m.reps.length;
+  const cfg = CONFIG.PUSHUP_ELBOW;
+  if (reps === 0) {
+    return `<h4 style="margin-top:14px;">2) 肘关节评估</h4>
+      <p>未捕捉到完整的俯卧撑动作。请确保侧面拍摄且上肢（肩-肘-腕）清晰可见，
+         并完成至少一次"上→下→上"的完整动作。</p>`;
+  }
+  const d = m.depthCounts, lk = m.lockoutCounts;
+  const pct = (x) => ((x / reps) * 100).toFixed(1) + '%';
+  const mins = m.reps.map(r => r.minAngle).filter(x => x != null);
+  const maxs = m.reps.map(r => r.maxAngle).filter(x => x != null);
+  const avgMin = (mins.reduce((s, x) => s + x, 0) / mins.length).toFixed(1);
+  const avgMax = (maxs.reduce((s, x) => s + x, 0) / maxs.length).toFixed(1);
+
+  const shallowPct = d.shallow / reps;
+  const lockedPct  = lk.locked / reps;
+
+  const blocks = [];
+  if (shallowPct >= 0.2) {
+    blocks.push(`
+      <p class="warn">▌下沉深度不足：${d.shallow} / ${reps} 次（${pct(d.shallow)}）</p>
+      <p>本次 rep 最低肘角未能降到 <b>${cfg.DEPTH_SHALLOW}°</b> 以下，胸部未接近地面。
+        胸大肌在短动程下无法获得充分的<b>离心-向心</b>刺激，训练效果下降；
+        同时容易形成代偿，长期可能导致前锯肌、菱形肌激活不足。<br>
+        <b>纠正</b>：① 有意识让胸部（而非下巴）先接触地面，或地面上放置一块
+        <b>5–8cm 高的海绵/毛巾卷</b>作为下沉目标物；
+        ② 若力量不足，先做<b>跪姿俯卧撑</b>或<b>斜面俯卧撑</b>（手撑高于脚），
+        在全程完整动作下再逐步降低斜度。</p>`);
+  }
+  if (lockedPct >= 0.2) {
+    blocks.push(`
+      <p class="bad">▌肘关节锁死：${lk.locked} / ${reps} 次（${pct(lk.locked)}）</p>
+      <p>上位时肘角 > <b>${cfg.LOCKOUT_THRESHOLD}°</b>，手臂完全伸直到关节骨性受限位。
+        肘鹰嘴 (olecranon) 直接撞击鹰嘴窝，应力全部转到<b>关节软骨与尺侧副韧带</b>，
+        与<b>鹰嘴滑囊炎</b>、<b>鹰嘴应力骨折</b>、肱三头肌止点肌腱病相关；
+        同时肌肉离开张力状态，训练有效功下降。<br>
+        <b>纠正</b>：① 上位时保持<b>肘关节 5°–10° 微屈</b>，让肱三头肌全程保持张力；
+        ② 减少"甩"的节奏，向心阶段控制在 1–2 秒；
+        ③ 训练后做三头肌拉伸与肘部环绕活动 10–15 次。</p>`);
+  }
+  if (blocks.length === 0) {
+    blocks.push(`<p class="ok">肘关节深度与上位控制均处于安全区间，继续保持。</p>`);
+  }
+
+  return `
+    <h4 style="margin-top:14px;">2) 肘关节评估（完成 ${reps} 次）</h4>
+    <p>平均下沉肘角：<b>${avgMin}°</b>　|　平均上位肘角：<b>${avgMax}°</b></p>
+    <ul>
+      <li>深度 — <span class="ok">到位</span>（≤ ${cfg.DEPTH_SHALLOW}°）：${d.ok} 次（${pct(d.ok)}），
+        <span class="warn">不足</span>（&gt; ${cfg.DEPTH_SHALLOW}°）：${d.shallow} 次（${pct(d.shallow)}）</li>
+      <li>上位 — <span class="ok">正常</span>（≤ ${cfg.LOCKOUT_THRESHOLD}°）：${lk.ok} 次（${pct(lk.ok)}），
+        <span class="bad">锁死</span>（&gt; ${cfg.LOCKOUT_THRESHOLD}°）：${lk.locked} 次（${pct(lk.locked)}）</li>
+    </ul>
+    ${blocks.join('\n')}
   `;
 }
 
