@@ -517,24 +517,68 @@ const LM = {
   LEFT_ANKLE: 27,    RIGHT_ANKLE: 28,
 };
 
-/* ---------- 语音提醒（Web Speech API，带按 key 冷却） ---------- */
-const _voiceCooldown = new Map(); // key → lastSpokeTs
+/* ---------- 语音提醒（Web Speech API） ----------
+ * 移动端（尤其 iOS Safari）特殊处理：
+ *  1. 必须在用户手势的同步调用栈里首次 speak，引擎才会被解锁
+ *  2. SpeechSynthesisUtterance 必须保留引用，否则被 GC 后无声
+ *  3. iOS 切后台后 engine 会 paused，每次 speak 前调 resume()
+ */
+const _voiceCooldown = new Map();
+const _utterPool = [];           // 保留 utterance 引用，防 iOS GC 无声
+let _voiceUnlocked = false;
+
+function _ttsAvailable() {
+  return typeof window !== 'undefined' && 'speechSynthesis' in window;
+}
+
+/** 在用户手势中调用一次空语音，解锁移动端 TTS */
+function unlockVoice() {
+  if (_voiceUnlocked || !_ttsAvailable()) return;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.lang = CONFIG.VOICE.LANG;
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+    _utterPool.push(u);
+    _voiceUnlocked = true;
+  } catch (e) { /* ignore */ }
+}
+
+/** 全局监听首次用户手势进行解锁（pointerdown 兼容鼠标 + 触摸 + 笔） */
+(function armVoiceUnlock() {
+  if (!_ttsAvailable()) return;
+  const handler = () => {
+    unlockVoice();
+    window.removeEventListener('pointerdown', handler, true);
+    window.removeEventListener('touchstart',  handler, true);
+    window.removeEventListener('keydown',     handler, true);
+  };
+  window.addEventListener('pointerdown', handler, true);
+  window.addEventListener('touchstart',  handler, true);
+  window.addEventListener('keydown',     handler, true);
+})();
+
 function speak(text, key = text) {
-  if (!CONFIG.VOICE.ENABLED) return;
-  if (typeof window.speechSynthesis === 'undefined') return;
+  if (!CONFIG.VOICE.ENABLED || !_ttsAvailable()) return;
   const now = performance.now();
   const last = _voiceCooldown.get(key) || 0;
   if (now - last < CONFIG.VOICE.COOLDOWN_MS) return;
   _voiceCooldown.set(key, now);
   try {
+    // iOS 切后台 / 锁屏后 engine 可能 paused，先恢复
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
     const u = new SpeechSynthesisUtterance(text);
     u.lang   = CONFIG.VOICE.LANG;
     u.rate   = CONFIG.VOICE.RATE;
     u.pitch  = CONFIG.VOICE.PITCH;
     u.volume = CONFIG.VOICE.VOLUME;
     window.speechSynthesis.speak(u);
+    // 保留引用（最多 8 条，FIFO），避免被 GC 导致无声
+    _utterPool.push(u);
+    if (_utterPool.length > 8) _utterPool.shift();
   } catch (e) { console.warn('speak error', e); }
 }
+
 function resetVoiceCooldown() { _voiceCooldown.clear(); }
 
 /** 有限状态机规则基类 */
@@ -1410,7 +1454,24 @@ const chkVoice = document.getElementById('chkVoice');
 chkVoice.checked = CONFIG.VOICE.ENABLED;
 chkVoice.addEventListener('change', () => {
   CONFIG.VOICE.ENABLED = chkVoice.checked;
-  if (!chkVoice.checked && window.speechSynthesis) window.speechSynthesis.cancel();
+  if (!chkVoice.checked) {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  } else {
+    // 在 change 事件（用户手势）同步调用：解锁移动端 TTS 并给出反馈
+    unlockVoice();
+    try {
+      if (window.speechSynthesis && window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+      const u = new SpeechSynthesisUtterance('语音提醒已开启');
+      u.lang = CONFIG.VOICE.LANG;
+      u.rate = CONFIG.VOICE.RATE;
+      u.pitch = CONFIG.VOICE.PITCH;
+      u.volume = CONFIG.VOICE.VOLUME;
+      window.speechSynthesis.speak(u);
+      _utterPool.push(u);
+    } catch (e) { /* ignore */ }
+  }
 });
 
 // 生成报告按钮
