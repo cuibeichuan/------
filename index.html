@@ -271,8 +271,15 @@
     <button class="btn" id="btnResetCount">🔄 重置计数</button>
     <button class="btn primary" id="btnReport">📋 结束并生成报告</button>
     <label class="btn" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
-      <input type="checkbox" id="chkVoice" checked style="margin:0;"> 🔊 语音提醒
+      <input type="checkbox" id="chkVoice" checked style="margin:0;"> 语音提醒
     </label>
+    <button class="btn" id="btnVoiceTest">🔊 测试语音</button>
+  </div>
+  <div id="voiceHint" style="font-size:12px;color:#9aa3b2;padding:4px 2px;line-height:1.5;">
+    📱 手机端如无声音：① 关闭 iPhone 侧边<b>静音开关</b>（橙色条）；
+    ② 按音量<b>+键</b>并确认屏幕显示"<b>铃声</b>"或"<b>媒体</b>"音量不为 0；
+    ③ 微信/QQ 等内置浏览器不支持语音，请用系统 Safari / Chrome 打开。
+    先点一下 <b>🔊 测试语音</b>，听到即表示正常。
   </div>
 
   <!-- 报告区（生成后显示） -->
@@ -531,13 +538,17 @@ function _ttsAvailable() {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
-/** 在用户手势中调用一次空语音，解锁移动端 TTS */
+/** 在用户手势中调用一次 speak，解锁移动端 TTS
+ *  注意：iOS 要求此次调用 volume > 0 才算真正解锁，否则后续异步 speak 仍无声
+ */
 function unlockVoice() {
   if (_voiceUnlocked || !_ttsAvailable()) return;
   try {
-    const u = new SpeechSynthesisUtterance(' ');
+    // 用极短的"."作为解锁内容，不易干扰；若要完全静默改用 volume=0 可能无效
+    const u = new SpeechSynthesisUtterance('.');
     u.lang = CONFIG.VOICE.LANG;
-    u.volume = 0;
+    u.rate = 1.5;
+    u.volume = CONFIG.VOICE.VOLUME;
     window.speechSynthesis.speak(u);
     _utterPool.push(u);
     _voiceUnlocked = true;
@@ -1454,23 +1465,55 @@ const chkVoice = document.getElementById('chkVoice');
 chkVoice.checked = CONFIG.VOICE.ENABLED;
 chkVoice.addEventListener('change', () => {
   CONFIG.VOICE.ENABLED = chkVoice.checked;
-  if (!chkVoice.checked) {
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-  } else {
-    // 在 change 事件（用户手势）同步调用：解锁移动端 TTS 并给出反馈
-    unlockVoice();
-    try {
-      if (window.speechSynthesis && window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
+  if (!chkVoice.checked && window.speechSynthesis) window.speechSynthesis.cancel();
+});
+
+/* 🔊 测试语音按钮
+ *  - 在 click 事件同步栈中（标准 user activation）调 speak，最大化解锁成功率
+ *  - 即使开关关闭也允许测试
+ *  - 根据浏览器能力直接更新 hint 行，让用户在手机上也能看到诊断结果
+ */
+document.getElementById('btnVoiceTest').addEventListener('click', () => {
+  const hint = document.getElementById('voiceHint');
+  if (!('speechSynthesis' in window)) {
+    hint.innerHTML = '❌ 当前浏览器不支持语音合成（speechSynthesis）。' +
+      '请改用系统自带的 <b>Safari (iOS)</b> 或 <b>Chrome (Android)</b> 打开本页。';
+    hint.style.color = '#ff6b6b';
+    return;
+  }
+  unlockVoice();
+  try {
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    const u = new SpeechSynthesisUtterance('语音测试，注意保持躯干正直');
+    u.lang   = CONFIG.VOICE.LANG;
+    u.rate   = CONFIG.VOICE.RATE;
+    u.pitch  = CONFIG.VOICE.PITCH;
+    u.volume = CONFIG.VOICE.VOLUME;
+    let spoke = false;
+    u.onstart = () => { spoke = true; };
+    u.onerror = (e) => {
+      hint.innerHTML = '⚠ 语音播放出错：' + (e.error || '未知错误') +
+        '。请检查手机静音开关与媒体音量。';
+      hint.style.color = '#f59e0b';
+    };
+    window.speechSynthesis.speak(u);
+    _utterPool.push(u);
+    // 1.2 秒后若仍未触发 onstart → 多半是被静音/拦截
+    setTimeout(() => {
+      if (!spoke) {
+        hint.innerHTML = '⚠ 看起来没有播放出声音。' +
+          '常见原因：① iPhone <b>侧边静音开关</b>处于静音；' +
+          '② 媒体音量为 0；③ 当前是微信/QQ/钉钉等内置浏览器（不支持 TTS）。' +
+          '请检查后再试。';
+        hint.style.color = '#f59e0b';
+      } else {
+        hint.innerHTML = '✅ 语音可用，运动中将自动提醒。';
+        hint.style.color = '#10b981';
       }
-      const u = new SpeechSynthesisUtterance('语音提醒已开启');
-      u.lang = CONFIG.VOICE.LANG;
-      u.rate = CONFIG.VOICE.RATE;
-      u.pitch = CONFIG.VOICE.PITCH;
-      u.volume = CONFIG.VOICE.VOLUME;
-      window.speechSynthesis.speak(u);
-      _utterPool.push(u);
-    } catch (e) { /* ignore */ }
+    }, 1200);
+  } catch (e) {
+    hint.innerHTML = '❌ 调用失败：' + e.message;
+    hint.style.color = '#ff6b6b';
   }
 });
 
