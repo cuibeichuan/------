@@ -257,7 +257,6 @@ const videoEl   = document.getElementById('videoEl');
  * ============================================================ */
 let pose = null;            // MediaPipe Pose 实例
 let mode = 'idle';          // 'idle' | 'camera' | 'video'
-let mpCamera = null;        // MediaPipe Camera 工具
 let cameraStream = null;    // getUserMedia 返回的流
 let videoRafId = null;      // 视频模式渲染 rAF id
 let inferTimerId = null;    // 视频模式推理定时器
@@ -309,21 +308,8 @@ function initPose() {
  *  推理结果回调：绘制图像 + 骨架
  * ============================================================ */
 function onPoseResults(results) {
-  // 视频模式：只缓存关键点，渲染循环按视频帧率叠加，避免被推理拖慢
-  if (mode === 'video') {
-    lastLandmarks = results.poseLandmarks || null;
-    return;
-  }
-  // 摄像头模式：直接绘制（image 来自 MediaPipe 内部）
-  ctx.save();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (results.image) {
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-  }
-  if (results.poseLandmarks) {
-    drawSkeleton(results.poseLandmarks);
-  }
-  ctx.restore();
+  // 两种模式统一：只缓存关键点，渲染循环负责画面与骨架叠加
+  lastLandmarks = results.poseLandmarks || null;
 }
 
 /* ============================================================
@@ -397,24 +383,46 @@ async function startCamera() {
     const vh = videoEl.videoHeight || CONFIG.CAMERA_HEIGHT;
     fitCanvasTo(vw, vh);
     showPlaceholder(false);
-
-    // 使用 MediaPipe Camera 工具循环推送帧 + 帧率限制
-    mpCamera = new Camera(videoEl, {
-      onFrame: async () => {
-        const now = performance.now();
-        if (now - lastFrameTime < MIN_FRAME_INTERVAL) return;
-        lastFrameTime = now;
-        await pose.send({ image: videoEl });
-      },
-      width:  CONFIG.CAMERA_WIDTH,
-      height: CONFIG.CAMERA_HEIGHT,
-    });
-    await mpCamera.start();
+    lastLandmarks = null;
 
     setStatus('实时检测中', 'live');
     btnStop.disabled  = false;
     btnPlay.disabled  = true;
     btnPause.disabled = true;
+
+    // ---- 渲染循环：每个 rAF 都把当前摄像头帧画到 canvas，并叠加最近一次骨架 ----
+    // 摄像头做水平镜像（前置自拍更自然）
+    const renderLoop = () => {
+      if (mode !== 'camera') return;
+      if (videoEl.readyState >= 2) {
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+        if (lastLandmarks) drawSkeleton(lastLandmarks);
+        ctx.restore();
+      }
+      videoRafId = requestAnimationFrame(renderLoop);
+    };
+    videoRafId = requestAnimationFrame(renderLoop);
+
+    // ---- 推理循环：串行调用 pose.send，互不重入；按目标帧率间隔触发 ----
+    const inferTick = async () => {
+      if (mode !== 'camera') return;
+      if (!inferring && videoEl.readyState >= 2) {
+        inferring = true;
+        try {
+          await pose.send({ image: videoEl });
+        } catch (e) {
+          console.warn('pose.send error', e);
+        } finally {
+          inferring = false;
+        }
+      }
+      inferTimerId = setTimeout(inferTick, MIN_FRAME_INTERVAL);
+    };
+    inferTimerId = setTimeout(inferTick, 0);
   } catch (err) {
     console.error(err);
     setStatus('摄像头启动失败：' + err.message, 'idle');
@@ -490,10 +498,8 @@ async function startVideoFromFile(file) {
  *  停止所有任务
  * ============================================================ */
 async function stopAll() {
-  if (mpCamera) {
-    try { await mpCamera.stop(); } catch (_) {}
-    mpCamera = null;
-  }
+  // 先置 idle，让所有循环下一 tick 退出
+  mode = 'idle';
   if (cameraStream) {
     cameraStream.getTracks().forEach(t => t.stop());
     cameraStream = null;
