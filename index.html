@@ -11,234 +11,462 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 
 <style>
-  /* ================== 全局基础样式 ================== */
+  /* ================== 设计令牌 ================== */
+  :root {
+    --bg-0: #070a12;
+    --bg-1: #0c1120;
+    --card-bg: rgba(22, 27, 44, 0.72);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --text: #e8ecf5;
+    --text-dim: #8b93a8;
+    --text-mute: #60687e;
+    --accent: #6366f1;
+    --accent-2: #a855f7;
+    --accent-3: #22d3ee;
+    --ok: #10d27c;
+    --warn: #fbbf24;
+    --bad: #f87171;
+
+    --sport-jumprope: #22d3ee;
+    --sport-pushup:   #f97316;
+    --sport-squat:    #a855f7;
+
+    --radius-lg: 18px;
+    --radius-md: 12px;
+    --radius-sm: 10px;
+
+    --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.25);
+  }
+
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
     margin: 0; padding: 0;
-    background: #0f1116;
-    color: #e6e8ee;
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
     min-height: 100vh;
+    background:
+      radial-gradient(1100px 600px at 80% -10%, rgba(168, 85, 247, 0.18), transparent 60%),
+      radial-gradient(900px 500px at -10% 10%, rgba(34, 211, 238, 0.14), transparent 60%),
+      linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
   }
 
   .app {
-    max-width: 1100px;
+    max-width: 1120px;
     margin: 0 auto;
-    padding: 16px;
+    padding: 20px 16px 32px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
   }
 
-  header h1 {
-    margin: 0 0 4px 0;
+  /* ================== Hero 区 ================== */
+  .hero {
+    position: relative;
+    padding: 22px 22px 20px;
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(135deg, rgba(99, 102, 241, 0.22), rgba(168, 85, 247, 0.12) 50%, rgba(34, 211, 238, 0.12));
+    border: 1px solid var(--card-border);
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+  }
+  .hero::before {
+    content: '';
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(400px 200px at 90% -30%, rgba(255,255,255,0.12), transparent 60%);
+    pointer-events: none;
+  }
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    padding: 4px 10px; border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #cdd3e6;
+    text-transform: uppercase;
+  }
+  .hero-badge::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent-3);
+    box-shadow: 0 0 10px var(--accent-3);
+  }
+  .hero h1 {
+    margin: 10px 0 6px;
+    font-size: 26px; font-weight: 700; letter-spacing: 0.3px;
+    background: linear-gradient(90deg, #ffffff 30%, #a5b4fc 70%, #67e8f9 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero p { margin: 0; font-size: 13.5px; color: var(--text-dim); max-width: 640px; }
+  .hero-stats {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    margin-top: 14px; font-size: 12px; color: var(--text-dim);
+  }
+  .hero-stats b { color: var(--text); font-size: 15px; font-weight: 700; display: block; }
+
+  /* ================== 教练寄语条 ================== */
+  .coach {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .coach-avatar {
+    width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
     font-size: 20px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35);
   }
-  header p {
-    margin: 0;
-    font-size: 13px;
-    color: #9aa3b2;
+  .coach-msg { font-size: 13.5px; color: #d3d9ea; line-height: 1.5; }
+  .coach-msg b { color: #fff; }
+
+  /* ================== 通用卡片 section ================== */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    padding: 14px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .section-heading {
+    font-size: 11px; letter-spacing: 2px;
+    color: var(--text-mute); text-transform: uppercase;
+    margin: 4px 2px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-heading::after {
+    content: ''; flex: 1; height: 1px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.08), transparent);
   }
 
-  /* ================== 按钮组 ================== */
-  .btn-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
+  /* ================== 按钮 ================== */
+  .btn-row { display: flex; flex-wrap: wrap; gap: 10px; }
   .btn {
-    /* 移动端友好：最小 44x44 */
-    min-height: 44px;
-    min-width: 44px;
+    min-height: 42px; min-width: 44px;
     padding: 10px 16px;
-    border: none;
-    border-radius: 10px;
-    background: #2a2f3a;
-    color: #e6e8ee;
-    font-size: 15px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, transform 0.05s;
+    transition: all 0.15s ease;
     user-select: none;
+    display: inline-flex; align-items: center; gap: 6px;
   }
-  .btn:hover { background: #353c4a; }
-  .btn:active { transform: scale(0.97); }
-  .btn.primary { background: #3b82f6; }
-  .btn.primary:hover { background: #4d8ffb; }
-  .btn.success { background: #10b981; }
-  .btn.success:hover { background: #20c896; }
-  .btn.warning { background: #f59e0b; color: #1a1a1a; }
-  .btn.warning:hover { background: #ffb12a; }
-  .btn.active { outline: 2px solid #60a5fa; }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.16); transform: translateY(-1px); }
+  .btn:active { transform: translateY(0) scale(0.98); }
+  .btn.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35);
+  }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.success { background: linear-gradient(135deg, #10b981, #059669); border-color: transparent; color: #fff; }
+  .btn.warning { background: linear-gradient(135deg, #f59e0b, #d97706); border-color: transparent; color: #fff; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
-  .section-title {
-    font-size: 13px;
-    color: #9aa3b2;
-    margin: 6px 0 -4px 2px;
-    letter-spacing: 0.4px;
+  /* ================== 运动选择卡片 ================== */
+  .sport-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+  }
+  .sport-card {
+    position: relative;
+    padding: 16px 14px 14px;
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.03);
+    border: 1.5px solid rgba(255,255,255,0.06);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    overflow: hidden;
+  }
+  .sport-card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--card-accent, var(--accent));
+    opacity: 0.8;
+  }
+  .sport-card:hover {
+    transform: translateY(-2px);
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.14);
+  }
+  .sport-card.active {
+    background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+    border-color: var(--card-accent, var(--accent));
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .sport-card.active::after {
+    content: '✓';
+    position: absolute; top: 10px; right: 12px;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--card-accent, var(--accent));
+    color: #fff; font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sport-icon {
+    font-size: 32px; line-height: 1;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.3));
+  }
+  .sport-name { font-size: 17px; font-weight: 700; margin-top: 8px; }
+  .sport-tag { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; letter-spacing: 0.3px; }
+
+  /* ================== 运动简介面板 ================== */
+  .sport-intro {
+    padding: 16px 18px;
+    border-radius: var(--radius-md);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-left: 3px solid var(--card-accent, var(--accent));
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .intro-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .intro-icon {
+    width: 44px; height: 44px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    background: color-mix(in srgb, var(--card-accent, var(--accent)) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--card-accent, var(--accent)) 40%, transparent);
+  }
+  .intro-name { font-size: 18px; font-weight: 700; }
+  .intro-brief { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+  .intro-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 6px;
+  }
+  .intro-col { background: rgba(255,255,255,0.03); border-radius: var(--radius-sm); padding: 10px 12px; }
+  .col-title { font-size: 12px; letter-spacing: 0.6px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; }
+  .intro-col ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.65; color: #d3d9ea; }
+  .intro-col li { margin-bottom: 3px; }
+  .intro-risk {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.2);
+    font-size: 12.5px;
+    color: #fcd34d;
+    line-height: 1.55;
   }
 
-  /* ================== 画布容器（保持比例，避免黑边/变形） ================== */
+  /* ================== 画布容器 ================== */
   .canvas-wrap {
     position: relative;
     width: 100%;
     background: #000;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
     overflow: hidden;
-    aspect-ratio: 4 / 3; /* 默认值，运行时会按视频实际比例覆盖 */
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    aspect-ratio: 4 / 3;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--card-border);
+    box-shadow: var(--shadow-md);
   }
-  .canvas-wrap canvas {
-    width: 100%;
-    height: 100%;
-    display: block;
-    object-fit: contain;
-  }
+  .canvas-wrap canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
   .placeholder {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #6b7280;
-    font-size: 14px;
-    text-align: center;
-    padding: 16px;
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px;
+    color: #6b7280; font-size: 13.5px; text-align: center; padding: 16px;
     pointer-events: none;
+  }
+  .placeholder::before {
+    content: '📸'; font-size: 36px; opacity: 0.5;
   }
 
   /* 状态条 */
   .status {
-    font-size: 13px;
-    color: #9aa3b2;
-    background: #1a1d24;
-    padding: 8px 12px;
-    border-radius: 8px;
-    min-height: 36px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    font-size: 12.5px; color: var(--text-dim);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--card-border);
+    padding: 8px 12px; border-radius: var(--radius-sm);
+    min-height: 34px;
+    display: flex; align-items: center; gap: 8px;
   }
-  .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #6b7280;
-  }
-  .dot.live { background: #ef4444; animation: blink 1s infinite; }
-  .dot.ok { background: #10b981; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; }
+  .dot.live { background: var(--bad); box-shadow: 0 0 10px var(--bad); animation: blink 1s infinite; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
   @keyframes blink { 50% { opacity: 0.3; } }
 
-  /* 隐藏文件选择器 */
   input[type="file"].hidden-input { display: none; }
-  /* 视频元素离屏（不能用 display:none，否则部分浏览器会节流/暂停播放） */
   video.hidden-input {
-    position: fixed;
-    left: -9999px;
-    top: 0;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
+    position: fixed; left: -9999px; top: 0; width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
   }
 
   /* ================== 指标面板 ================== */
   .metrics {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 10px;
-    align-items: stretch;
-    background: #1a1d24;
-    border-radius: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
     padding: 12px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
   }
   .metric {
-    flex: 1 1 100px;
-    min-width: 100px;
-    background: #242935;
-    border-radius: 8px;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    position: relative;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    overflow: hidden;
+  }
+  .metric::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    opacity: 0.6;
   }
   .metric-label {
-    font-size: 12px;
-    color: #9aa3b2;
-    letter-spacing: 0.3px;
+    font-size: 11px; color: var(--text-dim);
+    letter-spacing: 0.6px; text-transform: uppercase; font-weight: 600;
   }
   .metric-value {
-    font-size: 22px;
-    font-weight: 600;
-    color: #e6e8ee;
+    font-size: 22px; font-weight: 700; color: var(--text);
     font-variant-numeric: tabular-nums;
+    line-height: 1.2;
   }
 
   /* ================== 报告区 ================== */
   .report {
-    background: #1a1d24;
-    border-left: 4px solid #3b82f6;
-    border-radius: 10px;
-    padding: 14px 16px;
-    font-size: 14px;
-    line-height: 1.7;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-left: 4px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+    font-size: 14px; line-height: 1.75;
     color: #d8dde7;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
   }
-  .report h3 { margin: 0 0 8px; color: #e6e8ee; font-size: 16px; }
+  .report h3 { margin: 0 0 10px; color: #fff; font-size: 18px; font-weight: 700; }
+  .report h4 { margin: 14px 0 6px; color: #fff; font-size: 15px; font-weight: 600; }
   .report ul { margin: 6px 0; padding-left: 22px; }
-  .report .ok    { color: #10b981; font-weight: 600; }
-  .report .warn  { color: #f59e0b; font-weight: 600; }
-  .report .bad   { color: #ef4444; font-weight: 600; }
-  .report .note  { color: #9aa3b2; font-size: 12px; margin-top: 8px; }
+  .report li { margin-bottom: 2px; }
+  .report .ok    { color: var(--ok); font-weight: 600; }
+  .report .warn  { color: var(--warn); font-weight: 600; }
+  .report .bad   { color: var(--bad); font-weight: 600; }
+  .report .note  { color: var(--text-mute); font-size: 12px; margin-top: 10px; line-height: 1.6; }
+
+  .voice-hint {
+    font-size: 12px; color: var(--text-dim); line-height: 1.6;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+  }
 
   /* ================== 响应式 ================== */
   @media (max-width: 600px) {
-    header h1 { font-size: 18px; }
-    .btn { font-size: 14px; padding: 10px 14px; }
-    .app { padding: 12px; gap: 10px; }
+    .hero { padding: 18px 16px 16px; }
+    .hero h1 { font-size: 21px; }
+    .btn { font-size: 13.5px; padding: 9px 14px; }
+    .app { padding: 14px 12px 24px; gap: 12px; }
+    .intro-cols { grid-template-columns: 1fr; }
+    .sport-cards { grid-template-columns: repeat(3, 1fr); }
+    .sport-card { padding: 12px 8px; text-align: center; }
+    .sport-name { font-size: 14px; }
+    .sport-tag { display: none; }
   }
 </style>
 </head>
 
 <body>
 <div class="app">
-  <header>
-    <h1>AI Coach · 实时人体姿态检测</h1>
-    <p>基于 MediaPipe Pose · 摄像头实时检测 / 视频上传分析</p>
+
+  <!-- ========== Hero ========== -->
+  <header class="hero">
+    <span class="hero-badge">AI Sports Coach</span>
+    <h1>AI 运动姿态智能教练</h1>
+    <p>基于 MediaPipe Pose 的实时动作识别与纠错系统，覆盖落地缓冲、核心控制、关节安全等多维度评估，
+       帮助你像有一位随身私教一样避免运动损伤。</p>
+    <div class="hero-stats">
+      <div><b>2</b> 已上线运动</div>
+      <div><b>5</b> 动作检测维度</div>
+      <div><b>10+</b> 损伤风险提示</div>
+      <div><b>30 FPS</b> 实时推理</div>
+    </div>
   </header>
 
-  <!-- 模式入口 -->
-  <div class="section-title">输入源</div>
-  <div class="btn-row">
-    <button class="btn primary" id="btnCamera">📷 开始实时检测</button>
-    <button class="btn primary" id="btnUpload">🎞️ 上传视频分析</button>
-    <button class="btn" id="btnStop" disabled>⏹ 停止</button>
+  <!-- ========== 教练寄语 ========== -->
+  <div class="coach">
+    <div class="coach-avatar">🤖</div>
+    <div class="coach-msg" id="coachMsg">
+      你好，我是你的 AI 教练。<b>请先在下方选择今天要训练的项目</b>，我会为你实时点评每一个动作。
+    </div>
   </div>
 
-  <!-- 视频播放控制（仅视频模式可用） -->
-  <div class="section-title">视频控制</div>
-  <div class="btn-row">
-    <button class="btn success" id="btnPlay" disabled>▶ 播放</button>
-    <button class="btn warning" id="btnPause" disabled>⏸ 暂停</button>
+  <!-- ========== 运动项目选择 ========== -->
+  <div>
+    <div class="section-heading"><span>选择运动项目</span></div>
+    <div class="sport-cards">
+      <div class="sport-card" data-sport="jumprope" style="--card-accent: var(--sport-jumprope);">
+        <div class="sport-icon">🪢</div>
+        <div class="sport-name">跳绳</div>
+        <div class="sport-tag">有氧 · 心肺 · 下肢爆发</div>
+      </div>
+      <div class="sport-card" data-sport="pushup" style="--card-accent: var(--sport-pushup);">
+        <div class="sport-icon">💪</div>
+        <div class="sport-name">俯卧撑</div>
+        <div class="sport-tag">上肢 · 核心 · 胸肌力量</div>
+      </div>
+      <div class="sport-card" data-sport="squat" style="--card-accent: var(--sport-squat);">
+        <div class="sport-icon">🏋️</div>
+        <div class="sport-name">深蹲</div>
+        <div class="sport-tag">下肢之王 · 即将上线</div>
+      </div>
+    </div>
   </div>
 
-  <!-- 运动模式选择 -->
-  <div class="section-title">运动模式</div>
-  <div class="btn-row">
-    <button class="btn" data-sport="jumprope">🪢 跳绳</button>
-    <button class="btn" data-sport="pushup">💪 俯卧撑</button>
-    <button class="btn" data-sport="squat">🏋️ 深蹲</button>
+  <!-- ========== 运动简介面板 ========== -->
+  <div class="sport-intro" id="sportIntro">
+    <div class="intro-header">
+      <div class="intro-icon">👋</div>
+      <div>
+        <div class="intro-name">欢迎使用</div>
+        <div class="intro-brief">选择一项运动，查看训练要点、检测维度与损伤风险提示。</div>
+      </div>
+    </div>
   </div>
 
-  <!-- 画布显示区 -->
+  <!-- ========== 输入源 ========== -->
+  <div>
+    <div class="section-heading"><span>输入源</span></div>
+    <div class="btn-row">
+      <button class="btn primary" id="btnCamera">📷 开始实时检测</button>
+      <button class="btn primary" id="btnUpload">🎞️ 上传视频分析</button>
+      <button class="btn" id="btnStop" disabled>⏹ 停止</button>
+      <button class="btn success" id="btnPlay" disabled>▶ 播放</button>
+      <button class="btn warning" id="btnPause" disabled>⏸ 暂停</button>
+    </div>
+  </div>
+
+  <!-- ========== 画布 ========== -->
   <div class="canvas-wrap" id="canvasWrap">
     <canvas id="output"></canvas>
     <div class="placeholder" id="placeholder">点击上方按钮开启摄像头或上传视频</div>
   </div>
 
-  <!-- 规则引擎指标面板（根据当前运动模式动态展示） -->
+  <!-- ========== 指标面板 ========== -->
   <div class="metrics" id="metrics">
     <div class="metric">
       <div class="metric-label">当前运动</div>
@@ -275,7 +503,7 @@
     </label>
     <button class="btn" id="btnVoiceTest">🔊 测试语音</button>
   </div>
-  <div id="voiceHint" style="font-size:12px;color:#9aa3b2;padding:4px 2px;line-height:1.5;">
+  <div id="voiceHint" class="voice-hint">
     📱 手机端如无声音：① 关闭 iPhone 侧边<b>静音开关</b>（橙色条）；
     ② 按音量<b>+键</b>并确认屏幕显示"<b>铃声</b>"或"<b>媒体</b>"音量不为 0；
     ③ 微信/QQ 等内置浏览器不支持语音，请用系统 Safari / Chrome 打开。
@@ -1945,7 +2173,88 @@ btnPause.addEventListener('click', () => {
   if (mode === 'video') videoEl.pause();
 });
 
-// 运动模式选择按钮：切换规则引擎运动类型，并重置计数
+/* ============================================================
+ *  运动简介数据（用于展示"运动教练"风格的 UI 说明）
+ * ============================================================ */
+const SPORT_INFO = {
+  jumprope: {
+    name: '跳绳',
+    icon: '🪢',
+    brief: '高强度全身性有氧训练，提升心肺功能、协调性与下肢弹跳力。',
+    keypoints: [
+      '前脚掌先着地，膝盖<b>微屈</b>缓冲地面反作用力',
+      '躯干略前倾 <b>5°–15°</b>，核心收紧',
+      '手腕转绳，肩膀放松，保持节奏稳定',
+    ],
+    metrics: [
+      '✓ 跳跃计数 &amp; 活跃期识别',
+      '✓ 落地膝角（标准 140°–160°）',
+      '✓ 躯干倾角（标准 5°–15°）',
+    ],
+    risk: '过伸→胫骨骨膜炎/应力骨折；屈曲过大→髌股疼痛综合征；躯干过倾→腰椎剪切力',
+    coach: '跳绳训练中我会关注你的落地缓冲和躯干控制，动作偏离时立即语音提醒。准备好了吗？',
+  },
+  pushup: {
+    name: '俯卧撑',
+    icon: '💪',
+    brief: '上肢基础力量动作，刺激胸大肌、肱三头肌与核心稳定肌群。',
+    keypoints: [
+      '身体侧面呈直线：<b>肩-髋-踝 ≈ 180°</b>',
+      '下沉至胸部接近地面，肘角 <b>≤ 90°</b>',
+      '上位保持 <b>5°–10° 微屈</b>，不要锁死肘关节',
+    ],
+    metrics: [
+      '✓ 躯干笔直度（塌腰 / 撅臀）',
+      '✓ 头颈对齐（下垂 / 后仰）',
+      '✓ 肘关节角度 + 完成次数',
+    ],
+    risk: '塌腰→腰椎前凸、下腰痛；撅臀→肩前撞击综合征；肘锁死→鹰嘴滑囊炎 / 软骨冲击',
+    coach: '俯卧撑建议<b>侧面机位</b>拍摄。下沉不够深或躯干偏离时，我会第一时间提醒你。',
+  },
+  squat: {
+    name: '深蹲',
+    icon: '🏋️',
+    brief: '下肢之王，同时训练臀腿与核心。本项目正在开发中。',
+    keypoints: [
+      '膝盖方向与脚尖一致，避免内扣',
+      '髋-膝同步下沉，脚跟不离地',
+      '躯干中立位，避免弯腰代偿',
+    ],
+    metrics: ['🚧 开发中：膝角 / 髋角 / 下蹲深度 / 躯干角'],
+    risk: '膝内扣→半月板 / 前交叉韧带；过度前倾→腰椎压力',
+    coach: '深蹲模块正在开发中，稍后将上线。欢迎先体验跳绳或俯卧撑！',
+  },
+};
+
+function updateSportIntro(sport) {
+  const info = SPORT_INFO[sport];
+  if (!info) return;
+  const el = document.getElementById('sportIntro');
+  el.style.setProperty('--card-accent', `var(--sport-${sport})`);
+  el.innerHTML = `
+    <div class="intro-header">
+      <div class="intro-icon">${info.icon}</div>
+      <div>
+        <div class="intro-name">${info.name}</div>
+        <div class="intro-brief">${info.brief}</div>
+      </div>
+    </div>
+    <div class="intro-cols">
+      <div class="intro-col">
+        <div class="col-title">✓ 标准动作要点</div>
+        <ul>${info.keypoints.map(k => `<li>${k}</li>`).join('')}</ul>
+      </div>
+      <div class="intro-col">
+        <div class="col-title">📊 实时检测维度</div>
+        <ul>${info.metrics.map(k => `<li>${k}</li>`).join('')}</ul>
+      </div>
+    </div>
+    <div class="intro-risk">⚠ <b>损伤风险提示：</b>${info.risk}</div>
+  `;
+  document.getElementById('coachMsg').innerHTML = info.coach;
+}
+
+// 运动模式选择卡片：切换规则引擎 & 更新简介
 document.querySelectorAll('[data-sport]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('[data-sport]').forEach(b => b.classList.remove('active'));
@@ -1954,6 +2263,7 @@ document.querySelectorAll('[data-sport]').forEach(btn => {
     console.log('[运动模式] 已切换到：', sport);
     ruleEngine.setSport(sport);
     setupMetricLabels(sport);
+    updateSportIntro(sport);
     // 切换运动时清空报告
     const r = document.getElementById('report');
     r.style.display = 'none';
